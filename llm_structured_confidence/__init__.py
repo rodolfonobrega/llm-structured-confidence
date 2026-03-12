@@ -27,7 +27,7 @@ from ._parser import (
 from ._pandas import add_confidence_columns, extract_confidence
 from ._types import FieldLogprob, TokenInfo, TopAlternative
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "extract_field_logprobs",
