@@ -76,6 +76,32 @@ def make_genai_response(content: str, raw_tokens: list):
     return SimpleNamespace(candidates=[candidate])
 
 
+def make_vertex_batch_dict(content: str, raw_tokens: list) -> dict:
+    """Build a raw Vertex AI batch response dict with camelCase keys."""
+    chosen_candidates = []
+    top_candidates = []
+    for item in raw_tokens:
+        if len(item) == 2:
+            text, lp = item
+            top_raw = []
+        else:
+            text, lp, top_raw = item[0], item[1], item[2]
+        chosen_candidates.append({"token": text, "logProbability": lp, "tokenId": 0})
+        alts = [{"token": t, "logProbability": l, "tokenId": 0} for t, l in top_raw]
+        top_candidates.append({"candidates": alts})
+
+    return {
+        "candidates": [{
+            "content": {"parts": [{"text": content}], "role": "model"},
+            "finishReason": "STOP",
+            "logprobsResult": {
+                "chosenCandidates": chosen_candidates,
+                "topCandidates": top_candidates,
+            },
+        }],
+    }
+
+
 # ── Pydantic models for tests ────────────────────────────────────────
 
 class CategoryEnum(str, Enum):
@@ -184,3 +210,13 @@ def multi_field_response():
 @pytest.fixture
 def genai_scalar():
     return make_genai_response(GEMINI3_SCALAR_CONTENT, GEMINI3_SCALAR_TOKENS)
+
+
+@pytest.fixture
+def vertex_batch_scalar():
+    return make_vertex_batch_dict(GEMINI3_SCALAR_CONTENT, GEMINI3_SCALAR_TOKENS)
+
+
+@pytest.fixture
+def vertex_batch_array():
+    return make_vertex_batch_dict(ARRAY_CONTENT, ARRAY_TOKENS)

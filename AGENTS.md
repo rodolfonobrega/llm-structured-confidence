@@ -12,12 +12,18 @@ from llm_structured_confidence import extract_field_logprobs, FieldLogprob, Toke
 
 ```python
 def extract_field_logprobs(
-    response: Any,           # litellm.ModelResponse | openai.ChatCompletion | google.genai.GenerateContentResponse
+    response: Any,           # SDK objects OR raw dicts from batch APIs (see below)
     *,
     field: str | None,       # JSON field name, e.g. "category"
     model: type | None,      # Pydantic model — auto-detects Enum/list[Enum]/Literal fields
 ) -> dict[str, FieldLogprob]
 ```
+
+Supported response types:
+- `litellm.ModelResponse` / `openai.ChatCompletion` (SDK objects with `.choices`)
+- `google.genai.GenerateContentResponse` (SDK object with `.candidates`)
+- Raw `dict` with `"choices"` key (OpenAI batch API response body)
+- Raw `dict` with `"candidates"` key (Vertex AI batch API response, camelCase)
 
 Returns dict keyed by **value as string**. Scalar field → 1 entry. Array field → 1 entry per element.
 
@@ -129,6 +135,68 @@ resp = client.models.generate_content(model="gemini-2.5-flash", contents=[...],
 result = extract_field_logprobs(resp, field="category")  # same interface
 ```
 
+### Vertex AI batch API (raw dicts)
+
+```python
+import json
+
+# Each line in the batch output JSONL has: {"id": ..., "response": {...}, ...}
+with open("vertex_batch_output.jsonl") as f:
+    for line in f:
+        row = json.loads(line)
+        # Pass the "response" dict directly — no wrapper needed
+        result = extract_field_logprobs(row["response"], field="category")
+        for value, fl in result.items():
+            print(f"{row['id']}: {value} ({fl.mean_nonzero_probability:.2%})")
+```
+
+Batch JSONL request must include `"responseLogprobs": true` and `"logprobs": N` in
+`generationConfig`. The response dict uses camelCase keys (`logprobsResult`,
+`chosenCandidates`, `logProbability`) — the library handles this automatically.
+
+## Pandas integration
+
+For batch API outputs loaded into DataFrames:
+
+```python
+import pandas as pd
+from llm_structured_confidence import add_confidence_columns
+
+# Vertex AI batch output
+df = pd.read_json("vertex_batch_output.jsonl", lines=True)
+df = add_confidence_columns(df, response_column="response", field="category")
+# Adds: confidence_value, confidence_prob, confidence_joint_prob,
+#        confidence_top_alt, confidence_top_alt_prob, confidence_error
+
+# OpenAI batch output — extract body first
+df = pd.read_json("openai_batch_output.jsonl", lines=True)
+df["body"] = df["response"].apply(lambda r: r["body"])
+df = add_confidence_columns(df, response_column="body", field="category")
+
+# Custom prefix
+df = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
+# Adds: conf_value, conf_prob, conf_joint_prob, conf_top_alt, conf_top_alt_prob, conf_error
+```
+
+For single-response extraction into a flat dict:
+
+```python
+from llm_structured_confidence import extract_confidence
+
+row = {"response": {...}}  # raw batch response dict
+metrics = extract_confidence(row["response"], field="category")
+# metrics = {
+#     "value": "technology",
+#     "joint_probability": 0.9999,
+#     "mean_probability": 0.9999,
+#     "mean_nonzero_probability": 0.9999,
+#     "top_alternative": "science",
+#     "top_alternative_probability": 0.0001,
+#     "top_logprobs": [("technology", 0.9999), ("science", 0.0001), ...],
+#     "error": None,
+# }
+```
+
 ## Lower-level API
 
 For custom workflows (parse JSON without response, build own metrics):
@@ -167,7 +235,8 @@ llm_structured_confidence/
   __init__.py    # extract_field_logprobs(), Pydantic detection
   _types.py      # FieldLogprob, TokenInfo, TopAlternative
   _parser.py     # Lark JSON parser, char-range overlap logic
-  _converter.py  # normalizes litellm/OpenAI/google-genai → internal format
+  _converter.py  # normalizes litellm/OpenAI/google-genai/raw dicts → internal format
+  _pandas.py     # add_confidence_columns(), extract_confidence()
 examples/
   examples.ipynb # usage notebook with all features
 ```

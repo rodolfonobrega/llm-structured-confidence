@@ -24,12 +24,15 @@ from ._parser import (
     parse_json_spans,
     tokens_for_span,
 )
+from ._pandas import add_confidence_columns, extract_confidence
 from ._types import FieldLogprob, TokenInfo, TopAlternative
 
 __version__ = "0.1.0"
 
 __all__ = [
     "extract_field_logprobs",
+    "extract_confidence",
+    "add_confidence_columns",
     "FieldLogprob",
     "TokenInfo",
     "TopAlternative",
@@ -49,6 +52,7 @@ def extract_field_logprobs(
     response
         A ``litellm.ModelResponse``, ``openai.ChatCompletion``, or
         ``google.genai`` ``GenerateContentResponse`` **with logprobs enabled**.
+        Also accepts raw dicts from the OpenAI / Vertex AI batch APIs.
     field
         JSON field name to analyse (e.g. ``"category"``).  Takes precedence
         over *model*.

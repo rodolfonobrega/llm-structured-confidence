@@ -23,6 +23,7 @@ from llm_structured_confidence._types import FieldLogprob as FL
 from .conftest import (
     make_openai_response,
     make_genai_response,
+    make_vertex_batch_dict,
     make_tokens,
     make_normalized,
     SingleCategoryModel,
@@ -250,7 +251,70 @@ class TestConverter:
 
     def test_unsupported_type(self):
         with pytest.raises(TypeError, match="Unsupported"):
+            normalize_response(42)
+
+    def test_unsupported_dict(self):
+        with pytest.raises(TypeError, match="choices.*candidates"):
             normalize_response({"not": "a response"})
+
+    def test_vertex_batch_dict(self, vertex_batch_scalar):
+        nr = normalize_response(vertex_batch_scalar)
+        assert nr.content == GEMINI3_SCALAR_CONTENT
+        assert len(nr.tokens) == len(GEMINI3_SCALAR_TOKENS)
+        assert nr.tokens[3].token == "health"
+        assert nr.tokens[3].logprob == pytest.approx(-0.168335)
+
+    def test_vertex_batch_dict_top_logprobs(self, vertex_batch_scalar):
+        nr = normalize_response(vertex_batch_scalar)
+        assert len(nr.tokens[3].top_logprobs) == 3
+        assert nr.tokens[3].top_logprobs[0] == ("health", -0.168335)
+
+    def test_vertex_batch_dict_missing_logprobs(self):
+        response = {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+        with pytest.raises(ValueError, match="no logprobsResult"):
+            normalize_response(response)
+
+    def test_vertex_batch_dict_matches_genai_sdk(self, genai_scalar, vertex_batch_scalar):
+        nr_sdk = normalize_response(genai_scalar)
+        nr_dict = normalize_response(vertex_batch_scalar)
+        assert nr_sdk.content == nr_dict.content
+        assert len(nr_sdk.tokens) == len(nr_dict.tokens)
+        for sdk_tok, dict_tok in zip(nr_sdk.tokens, nr_dict.tokens):
+            assert sdk_tok.token == dict_tok.token
+            assert sdk_tok.logprob == pytest.approx(dict_tok.logprob)
+            assert sdk_tok.top_logprobs == dict_tok.top_logprobs
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 3b. Batch dict — extract_field_logprobs end-to-end with Vertex dicts
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestVertexBatchDict:
+
+    def test_scalar_extraction(self, vertex_batch_scalar):
+        result = extract_field_logprobs(vertex_batch_scalar, field="category")
+        assert "health and wellness" in result
+        fl = result["health and wellness"]
+        assert fl.value == "health and wellness"
+        assert len(fl.tokens) == 3
+
+    def test_scalar_matches_sdk(self, genai_scalar, vertex_batch_scalar):
+        result_sdk = extract_field_logprobs(genai_scalar, field="category")
+        result_dict = extract_field_logprobs(vertex_batch_scalar, field="category")
+        fl_sdk = result_sdk["health and wellness"]
+        fl_dict = result_dict["health and wellness"]
+        assert fl_sdk.joint_probability == pytest.approx(fl_dict.joint_probability)
+        assert fl_sdk.mean_probability == pytest.approx(fl_dict.mean_probability)
+        assert fl_sdk.mean_nonzero_probability == pytest.approx(fl_dict.mean_nonzero_probability)
+
+    def test_array_extraction(self, vertex_batch_array):
+        result = extract_field_logprobs(vertex_batch_array, field="categories")
+        assert "health and wellness" in result
+        assert "sports" in result
+
+    def test_pydantic_model_detection(self, vertex_batch_scalar):
+        result = extract_field_logprobs(vertex_batch_scalar, model=SingleCategoryModel)
+        assert "health and wellness" in result
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -496,3 +560,76 @@ class TestEdgeCases:
     def test_top_alternative_probability(self):
         alt = TopAlternative(token="x", logprob=-1.0)
         assert alt.probability == pytest.approx(math.exp(-1.0))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 8. Pandas integration — extract_confidence, add_confidence_columns
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestExtractConfidence:
+
+    def test_returns_flat_dict(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(vertex_batch_scalar, field="category")
+        assert result["value"] == "health and wellness"
+        assert result["error"] is None
+        assert isinstance(result["mean_nonzero_probability"], float)
+        assert isinstance(result["joint_probability"], float)
+
+    def test_top_alternative(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(vertex_batch_scalar, field="category")
+        assert result["top_alternative"] == "sport"
+        assert isinstance(result["top_alternative_probability"], float)
+
+    def test_error_on_bad_input(self):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence({"garbage": True}, field="category")
+        assert result["value"] is None
+        assert result["error"] is not None
+
+    def test_error_on_missing_field(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(vertex_batch_scalar, field="nonexistent")
+        assert result["value"] is None
+        assert result["error"] == "no values found"
+
+
+class TestAddConfidenceColumns:
+
+    def test_vertex_batch(self, vertex_batch_scalar):
+        import pandas as pd
+        from llm_structured_confidence import add_confidence_columns
+
+        df = pd.DataFrame([
+            {"id": "req-1", "response": vertex_batch_scalar},
+            {"id": "req-2", "response": vertex_batch_scalar},
+        ])
+        result = add_confidence_columns(df, response_column="response", field="category")
+
+        assert "confidence_value" in result.columns
+        assert "confidence_prob" in result.columns
+        assert "confidence_joint_prob" in result.columns
+        assert "confidence_top_alt" in result.columns
+        assert "confidence_top_alt_prob" in result.columns
+        assert "confidence_error" in result.columns
+        assert list(result["confidence_value"]) == ["health and wellness", "health and wellness"]
+        assert all(result["confidence_error"].isna())
+
+    def test_custom_prefix(self, vertex_batch_scalar):
+        import pandas as pd
+        from llm_structured_confidence import add_confidence_columns
+
+        df = pd.DataFrame([{"response": vertex_batch_scalar}])
+        result = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
+        assert "conf_value" in result.columns
+        assert "conf_prob" in result.columns
+
+    def test_does_not_mutate_original(self, vertex_batch_scalar):
+        import pandas as pd
+        from llm_structured_confidence import add_confidence_columns
+
+        df = pd.DataFrame([{"response": vertex_batch_scalar}])
+        original_cols = list(df.columns)
+        add_confidence_columns(df, response_column="response", field="category")
+        assert list(df.columns) == original_cols
