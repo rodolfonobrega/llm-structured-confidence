@@ -3,7 +3,7 @@
 Requires OPENAI_API_KEY (and optionally OPENAI_API_BASE) in the environment.
 
 Run with:
-    pytest llm_confidence/tests/test_e2e.py -v -s
+    pytest llm_structured_confidence/tests/test_e2e.py -v -s
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import litellm
 
-from llm_confidence import extract_field_logprobs
+from llm_structured_confidence import extract_field_logprobs
 
 MODEL = os.environ.get("LLM_CONFIDENCE_TEST_MODEL", "gpt-4.1-mini")
 

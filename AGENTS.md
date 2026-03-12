@@ -1,11 +1,11 @@
-# llm-confidence
+# llm-structured-confidence
 
 Extract per-field confidence from LLM structured JSON responses with logprobs.
 
 ## Import
 
 ```python
-from llm_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
+from llm_structured_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
 ```
 
 ## Function
@@ -134,8 +134,8 @@ result = extract_field_logprobs(resp, field="category")  # same interface
 For custom workflows (parse JSON without response, build own metrics):
 
 ```python
-from llm_confidence._parser import parse_json_spans, build_token_char_ranges, tokens_for_span, get_overlapping_indices
-from llm_confidence._converter import normalize_response
+from llm_structured_confidence._parser import parse_json_spans, build_token_char_ranges, tokens_for_span, get_overlapping_indices
+from llm_structured_confidence._converter import normalize_response
 
 # JSON → dict with _ValueSpan(value, char_start, char_end) for each atomic value
 parsed = parse_json_spans('{"category": "bars"}')  # parsed["category"].char_start, .char_end
@@ -163,7 +163,7 @@ APIs in `_parser` and `_converter` are internal; may change in minor releases.
 ## File structure
 
 ```
-llm_confidence/
+llm_structured_confidence/
   __init__.py    # extract_field_logprobs(), Pydantic detection
   _types.py      # FieldLogprob, TokenInfo, TopAlternative
   _parser.py     # Lark JSON parser, char-range overlap logic

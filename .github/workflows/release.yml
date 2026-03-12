@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  build:
+    name: Build and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+          import tomllib
+          from os import environ
+
+          tag = environ["RELEASE_TAG"]
+          match = re.fullmatch(r"v(?P<version>\d+\.\d+\.\d+)", tag)
+          if not match:
+              raise SystemExit(f"Release tag must look like vX.Y.Z, got: {tag}")
+
+          pyproject = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          version = pyproject["project"]["version"]
+          if version != match.group("version"):
+              raise SystemExit(
+                  f"pyproject.toml version ({version}) does not match release tag ({tag})"
+              )
+
+          init_text = pathlib.Path("llm_structured_confidence/__init__.py").read_text()
+          version_match = re.search(r'^__version__ = "([^"]+)"$', init_text, re.MULTILINE)
+          if not version_match:
+              raise SystemExit("Could not find __version__ in llm_structured_confidence/__init__.py")
+
+          init_version = version_match.group(1)
+          if init_version != version:
+              raise SystemExit(
+                  f"llm_structured_confidence.__version__ ({init_version}) does not match pyproject.toml ({version})"
+              )
+          PY
+
+      - name: Run unit tests
+        run: pytest llm_structured_confidence/tests/test_unit.py -v
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: twine check dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

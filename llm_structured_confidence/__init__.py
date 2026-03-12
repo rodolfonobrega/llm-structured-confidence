@@ -1,8 +1,8 @@
-"""llm-confidence — extract per-field confidence from LLM JSON responses.
+"""llm-structured-confidence — extract per-field confidence from LLM JSON responses.
 
 Usage::
 
-    from llm_confidence import extract_field_logprobs
+    from llm_structured_confidence import extract_field_logprobs
 
     result = extract_field_logprobs(response, field="category")
     print(result["health and wellness"].joint_probability)   # 0.845

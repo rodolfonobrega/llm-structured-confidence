@@ -1,4 +1,4 @@
-"""Data types for llm-confidence."""
+"""Data types for llm-structured-confidence."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Shared fixtures for llm-confidence tests."""
+"""Shared fixtures for llm-structured-confidence tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from llm_confidence._converter import NormalizedResponse, NormalizedToken
+from llm_structured_confidence._converter import NormalizedResponse, NormalizedToken
 
 
 # ── helper to build fake tokens ──────────────────────────────────────

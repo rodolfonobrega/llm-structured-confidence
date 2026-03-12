@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "llm-confidence"
+name = "llm-structured-confidence"
 version = "0.1.0"
 description = "Extract per-field confidence scores from LLM structured JSON outputs using token-level log-probabilities."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "llm-confidence contributors" },
+    { name = "llm-structured-confidence contributors" },
 ]
 keywords = ["llm", "logprobs", "confidence", "structured-output", "classification", "enum"]
 classifiers = [
@@ -32,8 +32,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.2",
+    "pydantic>=2",
     "pytest>=7.0",
     "python-dotenv",
+    "twine>=6",
 ]
 litellm = [
     "litellm",
@@ -43,12 +46,12 @@ genai = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/llm-confidence"
-Repository = "https://github.com/YOUR_USERNAME/llm-confidence"
-Issues = "https://github.com/YOUR_USERNAME/llm-confidence/issues"
+Homepage = "https://github.com/rodolfonobrega/llm-structured-confidence"
+Repository = "https://github.com/rodolfonobrega/llm-structured-confidence"
+Issues = "https://github.com/rodolfonobrega/llm-structured-confidence/issues"
 
 [tool.pytest.ini_options]
-testpaths = ["llm_confidence/tests"]
+testpaths = ["llm_structured_confidence/tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["llm_confidence"]
+packages = ["llm_structured_confidence"]

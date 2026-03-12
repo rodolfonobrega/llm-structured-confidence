@@ -1,4 +1,4 @@
-# llm-confidence
+# llm-structured-confidence
 
 Extract per-field confidence scores from LLM structured JSON outputs using token-level log-probabilities.
 
@@ -36,14 +36,20 @@ Naively summing all overlapping tokens gives 69% instead of the correct 84.5%.
 ## Installation
 
 ```bash
-pip install llm-confidence
+pip install llm-structured-confidence
+```
+
+Import path:
+
+```python
+from llm_structured_confidence import extract_field_logprobs
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/llm-confidence.git
-cd llm-confidence
+git clone https://github.com/rodolfonobrega/llm-structured-confidence.git
+cd llm-structured-confidence
 pip install -e ".[dev]"
 ```
 
@@ -51,7 +57,7 @@ pip install -e ".[dev]"
 
 ```python
 import litellm
-from llm_confidence import extract_field_logprobs
+from llm_structured_confidence import extract_field_logprobs
 
 response = litellm.completion(
     model="gpt-4.1-mini",  # or any provider: "vertex_ai/gemini-2.5-flash", etc.
@@ -291,8 +297,8 @@ Included: 'health' + ' and' + ' wellness'  ✓
 For custom workflows, internal modules are available:
 
 ```python
-from llm_confidence._parser import parse_json_spans, build_token_char_ranges, tokens_for_span
-from llm_confidence._converter import normalize_response
+from llm_structured_confidence._parser import parse_json_spans, build_token_char_ranges, tokens_for_span
+from llm_structured_confidence._converter import normalize_response
 
 parsed = parse_json_spans('{"category": "sports", "count": 2}')
 # parsed["category"] → _ValueSpan(value="sports", char_start=15, char_end=21)
@@ -312,11 +318,15 @@ The [`AGENTS.md`](AGENTS.md) file contains a compact API reference designed for 
 
 ```bash
 # Unit tests (55 tests, no API calls)
-pytest llm_confidence/tests/test_unit.py -v
+pytest llm_structured_confidence/tests/test_unit.py -v
 
 # E2E tests (6 tests, calls Vertex AI)
-pytest llm_confidence/tests/test_e2e.py -v -s
+pytest llm_structured_confidence/tests/test_e2e.py -v -s
 
 # All tests
 pytest -v
 ```
+
+## Publishing
+
+Release automation for PyPI via GitHub Actions is documented in [RELEASING.md](RELEASING.md).

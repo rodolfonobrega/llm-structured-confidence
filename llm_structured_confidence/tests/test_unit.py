@@ -1,4 +1,4 @@
-"""Comprehensive unit tests for llm-confidence.
+"""Comprehensive unit tests for llm-structured-confidence.
 
 All tests use mock token data — no API calls needed.
 """
@@ -9,16 +9,16 @@ import math
 
 import pytest
 
-from llm_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
-from llm_confidence._converter import normalize_response, NormalizedToken, NormalizedResponse
-from llm_confidence._parser import (
+from llm_structured_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
+from llm_structured_confidence._converter import normalize_response, NormalizedToken, NormalizedResponse
+from llm_structured_confidence._parser import (
     parse_json_spans,
     build_token_char_ranges,
     get_overlapping_indices,
     tokens_for_span,
     _ValueSpan,
 )
-from llm_confidence._types import FieldLogprob as FL
+from llm_structured_confidence._types import FieldLogprob as FL
 
 from .conftest import (
     make_openai_response,
