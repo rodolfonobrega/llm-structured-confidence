@@ -5,6 +5,9 @@ on:
     types:
       - published
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and validate
@@ -77,9 +80,12 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
+      contents: read
       id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llm-structured-confidence
 
     steps:
       - name: Download distributions

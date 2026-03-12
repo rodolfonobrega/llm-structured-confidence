@@ -61,31 +61,25 @@ import sys
 
 version = sys.argv[1]
 
-pyproject = pathlib.Path("pyproject.toml")
-text = pyproject.read_text()
-text, count = re.subn(
-    r'^version = "[^"]+"$',
-    f'version = "{version}"',
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if count != 1:
-    raise SystemExit("Could not update version in pyproject.toml")
-pyproject.write_text(text)
+files = {
+    pathlib.Path("pyproject.toml"): (
+        r'^version = "[^"]+"$',
+        f'version = "{version}"',
+        "pyproject.toml",
+    ),
+    pathlib.Path("llm_structured_confidence/__init__.py"): (
+        r'^__version__ = "[^"]+"$',
+        f'__version__ = "{version}"',
+        "llm_structured_confidence/__init__.py",
+    ),
+}
 
-init_file = pathlib.Path("llm_structured_confidence/__init__.py")
-text = init_file.read_text()
-text, count = re.subn(
-    r'^__version__ = "[^"]+"$',
-    f'__version__ = "{version}"',
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if count != 1:
-    raise SystemExit("Could not update __version__ in llm_structured_confidence/__init__.py")
-init_file.write_text(text)
+for path, (pattern, replacement, label) in files.items():
+    text = path.read_text(encoding="utf-8")
+    text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(f"Could not update version in {label}")
+    path.write_text(text, encoding="utf-8")
 PY
 
 git add pyproject.toml llm_structured_confidence/__init__.py
