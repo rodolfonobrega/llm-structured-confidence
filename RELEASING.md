@@ -47,6 +47,7 @@ For the standard flow, you can use:
 ```
 
 The script updates `pyproject.toml` and `llm_structured_confidence/__init__.py`, creates a release commit, pushes `main`, creates tag `vX.Y.Z`, pushes the tag, and publishes the GitHub Release.
+It aborts if you are not on `main`, if the Git tree is dirty, if `gh` is not authenticated, or if the target tag/release already exists.
 
 ## Local preflight
 

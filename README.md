@@ -337,3 +337,5 @@ For the common release flow, you can also use:
 ```bash
 ./scripts/release.sh 0.1.1
 ```
+
+The script refuses to run outside `main`, with a dirty Git tree, without `gh` auth, or if the release tag already exists.
