@@ -40,6 +40,12 @@ Naively summing all overlapping tokens gives 69% instead of the correct 84.5%.
 pip install llm-structured-confidence
 ```
 
+For DataFrame helpers:
+
+```bash
+pip install "llm-structured-confidence[pandas]"
+```
+
 Import path:
 
 ```python
@@ -123,6 +129,20 @@ for value, fl in result.items():
     print(f"{value}: {fl.joint_probability:.2%}")
 ```
 
+### Batch API raw dicts
+
+Raw OpenAI / Vertex AI batch payloads are supported directly.
+
+```python
+from llm_structured_confidence import extract_field_logprobs
+
+# OpenAI batch output line -> use response["body"]
+scores = extract_field_logprobs(batch_row["response"]["body"], field="category")
+
+# Vertex AI batch output line -> response dict itself
+scores = extract_field_logprobs(batch_row["response"], field="category")
+```
+
 ### Pydantic auto-detection
 
 Pass the Pydantic model you used for structured output — the library finds `Enum`, `list[Enum]`, and `Literal` fields automatically.
@@ -157,6 +177,24 @@ response = client.models.generate_content(
 )
 
 result = extract_field_logprobs(response, field="category")  # same interface
+```
+
+### Pandas integration
+
+For batch output files loaded into a DataFrame, use `add_confidence_columns`.
+
+```python
+import pandas as pd
+from llm_structured_confidence import add_confidence_columns
+
+# Vertex AI batch output
+df = pd.read_json("vertex_batch_output.jsonl", lines=True)
+df = add_confidence_columns(df, response_column="response", field="category")
+
+# OpenAI batch output
+df = pd.read_json("openai_batch_output.jsonl", lines=True)
+df["body"] = df["response"].apply(lambda r: r["body"])
+df = add_confidence_columns(df, response_column="body", field="category")
 ```
 
 ### Token inspection
@@ -286,7 +324,9 @@ Included: 'health' + ' and' + ' wellness'  ✓
 |----------|--------------|----------|----------------------|
 | **litellm** (recommended) | `ModelResponse` | `logprobs=True, top_logprobs=5` | [JSON mode](https://docs.litellm.ai/docs/completion/json_mode) |
 | **OpenAI** | `ChatCompletion` | `logprobs=True, top_logprobs=5` | [Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs) |
+| **OpenAI batch** | raw `dict` body with `choices` | from batch output file | [Batch API](https://platform.openai.com/docs/guides/batch) |
 | **google-genai** | `GenerateContentResponse` | `response_logprobs=True, logprobs=5` | [Structured output](https://ai.google.dev/gemini-api/docs/structured-output) |
+| **Vertex AI batch** | raw `dict` response with `candidates` | from batch output file | [Batch predictions](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-from-cloud-storage) |
 
 > [!TIP]
 > For classification tasks, consider disabling thinking/reasoning to get cleaner logprobs (no reasoning tokens mixed in). This applies to any model that supports it, but depends on your use case — reasoning may improve accuracy for complex classifications.

@@ -33,6 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2",
+    "pandas>=2",
     "pydantic>=2",
     "pytest>=7.0",
     "python-dotenv",
@@ -43,6 +44,9 @@ litellm = [
 ]
 genai = [
     "google-genai",
+]
+pandas = [
+    "pandas>=2",
 ]
 
 [project.urls]
