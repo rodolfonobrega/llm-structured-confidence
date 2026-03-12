@@ -4,6 +4,7 @@ Extract per-field confidence scores from LLM structured JSON outputs using token
 
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python->=3.10-3776ab?style=flat-square)](https://www.python.org)
+[![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square)](https://pypi.org/project/llm-structured-confidence/)
 
 [The Problem](#the-problem) • [Installation](#installation) • [Quick Start](#quick-start) • [Features](#features) • [API Reference](#api-reference) • [Supported Providers](#supported-providers)
 
@@ -330,3 +331,9 @@ pytest -v
 ## Publishing
 
 Release automation for PyPI via GitHub Actions is documented in [RELEASING.md](RELEASING.md).
+
+For the common release flow, you can also use:
+
+```bash
+./scripts/release.sh 0.1.1
+```

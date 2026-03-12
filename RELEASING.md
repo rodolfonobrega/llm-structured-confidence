@@ -38,6 +38,16 @@ This keeps the public package name specific and available, while preserving a cl
 5. Create and publish a GitHub Release from that tag.
 6. The workflow `.github/workflows/release.yml` will validate the version, run unit tests, build the distributions, run `twine check`, and publish to PyPI.
 
+## Release script
+
+For the standard flow, you can use:
+
+```bash
+./scripts/release.sh 0.1.1
+```
+
+The script updates `pyproject.toml` and `llm_structured_confidence/__init__.py`, creates a release commit, pushes `main`, creates tag `vX.Y.Z`, pushes the tag, and publishes the GitHub Release.
+
 ## Local preflight
 
 ```bash
