@@ -6,13 +6,15 @@ Extract per-field confidence scores from LLM structured JSON outputs using token
 [![Python](https://img.shields.io/badge/Python->=3.10-3776ab?style=flat-square)](https://www.python.org)
 [![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square&cacheSeconds=60)](https://pypi.org/project/llm-structured-confidence/)
 
-[The Problem](#the-problem) • [Installation](#installation) • [Quick Start](#quick-start) • [Features](#features) • [API Reference](#api-reference) • [Supported Providers](#supported-providers)
+[The Problem](#the-problem) • [Installation](#installation) • [Quick Start](#quick-start) • [Features](#features) • [API Reference](#api-reference) • [Supported Providers](#supported-providers) • [Usage Guide](docs/USAGE.md)
 
 ---
 
 Designed for [Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs) — available in [OpenAI](https://platform.openai.com/docs/guides/structured-outputs), [Gemini](https://ai.google.dev/gemini-api/docs/structured-output), and other providers. Works with any JSON schema, but **ideal for ENUM-based classification** where the model picks from a fixed set of values.
 
 We recommend [litellm](https://docs.litellm.ai/docs/completion/json_mode#pass-in-json_schema) as a unified interface for calling any provider with structured output and logprobs.
+
+For a compact end-to-end guide to the full public API, see [docs/USAGE.md](docs/USAGE.md).
 
 ## The Problem
 
