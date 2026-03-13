@@ -6,10 +6,17 @@ All tests use mock token data — no API calls needed.
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import pytest
+from pydantic import BaseModel
 
 from llm_structured_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
+from llm_structured_confidence._classification import (
+    classification_values_by_field,
+    detect_classification_fields,
+    normalize_response_schema,
+)
 from llm_structured_confidence._converter import normalize_response, NormalizedToken, NormalizedResponse
 from llm_structured_confidence._parser import (
     parse_json_spans,
@@ -41,10 +48,92 @@ from .conftest import (
     MULTI_FIELD_TOKENS,
 )
 
+CLASSIFICATION_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "category": {
+            "type": "string",
+            "enum": [
+                "health and wellness",
+                "sports",
+                "technology",
+                "entertainment",
+            ],
+        }
+    },
+    "required": ["category"],
+    "additionalProperties": False,
+}
+
+ARRAY_CLASSIFICATION_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "categories": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "health and wellness",
+                    "sports",
+                    "technology",
+                    "entertainment",
+                ],
+            },
+        }
+    },
+    "required": ["categories"],
+    "additionalProperties": False,
+}
+
+STRUCTURED_OUTPUT_WRAPPER = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "classification",
+        "strict": True,
+        "schema": CLASSIFICATION_JSON_SCHEMA,
+    },
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1. FieldLogprob.compute — metric calculations
 # ═══════════════════════════════════════════════════════════════════════
+
+class TestResponseSchemaNormalization:
+
+    def test_normalize_pydantic_model_to_json_schema(self):
+        schema = normalize_response_schema(SingleCategoryModel)
+        assert isinstance(schema, dict)
+        assert schema["type"] == "object"
+        assert schema["properties"]["category"]["enum"] == [
+            "health and wellness",
+            "sports",
+            "technology",
+            "entertainment",
+        ]
+
+    def test_normalize_json_schema_wrapper(self):
+        schema = normalize_response_schema(STRUCTURED_OUTPUT_WRAPPER)
+        assert schema == CLASSIFICATION_JSON_SCHEMA
+
+    def test_detect_fields_uses_normalized_schema_for_pydantic(self):
+        assert detect_classification_fields(SingleCategoryModel) == ["category"]
+        assert classification_values_by_field(SingleCategoryModel)["category"] == [
+            "health and wellness",
+            "sports",
+            "technology",
+            "entertainment",
+        ]
+
+    def test_detect_fields_uses_normalized_schema_for_json_schema(self):
+        assert detect_classification_fields(ARRAY_CLASSIFICATION_JSON_SCHEMA) == ["categories"]
+        assert classification_values_by_field(ARRAY_CLASSIFICATION_JSON_SCHEMA)["categories"] == [
+            "health and wellness",
+            "sports",
+            "technology",
+            "entertainment",
+        ]
+
 
 class TestFieldLogprobCompute:
 
@@ -108,6 +197,7 @@ class TestFieldLogprobCompute:
         fl = FL.compute("x", tokens, alts)
         assert len(fl.top_logprobs) == 2
         assert fl.top_logprobs[0].token == "x"
+        assert fl.top_logprobs[0].resolved_value is None
         assert fl.top_logprobs[1].probability == pytest.approx(math.exp(-2.3))
 
 
@@ -313,7 +403,7 @@ class TestVertexBatchDict:
         assert "sports" in result
 
     def test_pydantic_model_detection(self, vertex_batch_scalar):
-        result = extract_field_logprobs(vertex_batch_scalar, model=SingleCategoryModel)
+        result = extract_field_logprobs(vertex_batch_scalar, response_schema=SingleCategoryModel)
         assert "health and wellness" in result
 
 
@@ -371,6 +461,81 @@ class TestExtractScalar:
         assert len(fl.top_logprobs) == 3
         assert fl.top_logprobs[0].token == "health"
         assert fl.top_logprobs[1].token == "sport"
+
+
+class TestResolvedTopAlternatives:
+
+    def test_pydantic_schema_resolves_unique_prefixes(self, gemini3_scalar):
+        result = extract_field_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)
+        fl = result["health and wellness"]
+        assert fl.top_logprobs[0].token == "health"
+        assert fl.top_logprobs[0].resolved_value == "health and wellness"
+        assert fl.top_logprobs[1].token == "sport"
+        assert fl.top_logprobs[1].resolved_value == "sports"
+        assert fl.top_logprobs[2].token == "tech"
+        assert fl.top_logprobs[2].resolved_value == "technology"
+
+    def test_without_schema_keeps_top_alternatives_unresolved(self, gemini3_scalar):
+        result = extract_field_logprobs(gemini3_scalar, field="category")
+        fl = result["health and wellness"]
+        assert [alt.resolved_value for alt in fl.top_logprobs] == [None, None, None]
+
+    def test_array_resolves_each_element(self, array_response):
+        result = extract_field_logprobs(array_response, response_schema=MultipleCategoriesModel)
+        bars = result["health and wellness"]
+        sports = result["sports"]
+        assert bars.top_logprobs[0].resolved_value == "health and wellness"
+        assert bars.top_logprobs[1].resolved_value == "sports"
+        assert sports.top_logprobs[0].resolved_value == "sports"
+        assert sports.top_logprobs[1].resolved_value == "health and wellness"
+
+    def test_literal_model_resolves_unique_prefixes(self):
+        content = '{"mood":"happy"}'
+        tokens = [
+            ('{"', -0.01),
+            ("mood", 0.0),
+            ('":"', -0.10),
+            ("hap", -0.05, [("hap", -0.05), ("sad", -2.1), ("neu", -2.3)]),
+            ("py", 0.0),
+            ('"}', 0.0),
+        ]
+        resp = make_openai_response(content, tokens)
+        result = extract_field_logprobs(resp, response_schema=LiteralModel)
+        fl = result["happy"]
+        assert fl.top_logprobs[0].resolved_value == "happy"
+        assert fl.top_logprobs[1].resolved_value == "sad"
+        assert fl.top_logprobs[2].resolved_value == "neutral"
+
+    def test_json_schema_resolves_unique_prefixes(self, gemini3_scalar):
+        result = extract_field_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)
+        fl = result["health and wellness"]
+        assert fl.top_logprobs[0].resolved_value == "health and wellness"
+        assert fl.top_logprobs[1].resolved_value == "sports"
+        assert fl.top_logprobs[2].resolved_value == "technology"
+
+    def test_structured_output_wrapper_resolves_unique_prefixes(self, gemini3_scalar):
+        result = extract_field_logprobs(gemini3_scalar, response_schema=STRUCTURED_OUTPUT_WRAPPER)
+        fl = result["health and wellness"]
+        assert fl.top_logprobs[0].resolved_value == "health and wellness"
+
+    def test_ambiguous_prefix_stays_unresolved(self):
+        class AmbiguousCategoryModel(BaseModel):
+            category: Literal["Bar and Restaurants", "Bars and Nightlife"]
+
+        content = '{"category":"Bar and Restaurants"}'
+        tokens = [
+            ('{"', -0.01),
+            ("category", 0.0),
+            ('":"', -0.10),
+            ("Bar", -0.05, [("Bar", -0.05), ("Foo", -2.0)]),
+            (" and", 0.0),
+            (" Restaurants", 0.0),
+            ('"}', 0.0),
+        ]
+        resp = make_openai_response(content, tokens)
+        result = extract_field_logprobs(resp, response_schema=AmbiguousCategoryModel)
+        fl = result["Bar and Restaurants"]
+        assert fl.top_logprobs[0].resolved_value is None
 
 
 class TestExtractArray:
@@ -431,11 +596,11 @@ class TestFieldSelection:
 class TestPydanticDetection:
 
     def test_single_enum(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, model=SingleCategoryModel)
+        result = extract_field_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)
         assert "health and wellness" in result
 
     def test_list_enum(self, array_response):
-        result = extract_field_logprobs(array_response, model=MultipleCategoriesModel)
+        result = extract_field_logprobs(array_response, response_schema=MultipleCategoriesModel)
         assert "health and wellness" in result
         assert "sports" in result
 
@@ -443,10 +608,10 @@ class TestPydanticDetection:
         content = '{"mood":"happy"}'
         tokens = [('{"', -0.01), ("mood", 0.0), ('":"', -0.10), ("happy", -0.05), ('"}', 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, model=LiteralModel)
+        result = extract_field_logprobs(resp, response_schema=LiteralModel)
         assert "happy" in result
 
-    def test_mixed_model_only_enum(self):
+    def test_mixed_schema_only_enum(self):
         content = '{"category":"technology","confidence":0.9,"note":"test"}'
         tokens = [
             ('{"', -0.01),
@@ -467,12 +632,25 @@ class TestPydanticDetection:
             ('"}', 0.0),
         ]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, model=MixedModel)
+        result = extract_field_logprobs(resp, response_schema=MixedModel)
         assert "technology" in result
         assert len(result) == 1
 
-    def test_field_overrides_model(self, multi_field_response):
-        result = extract_field_logprobs(multi_field_response, field="amount", model=SingleCategoryModel)
+    def test_json_schema_detects_enum_field(self, gemini3_scalar):
+        result = extract_field_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)
+        assert "health and wellness" in result
+
+    def test_json_schema_detects_array_enum_field(self, array_response):
+        result = extract_field_logprobs(array_response, response_schema=ARRAY_CLASSIFICATION_JSON_SCHEMA)
+        assert "health and wellness" in result
+        assert "sports" in result
+
+    def test_field_overrides_response_schema(self, multi_field_response):
+        result = extract_field_logprobs(
+            multi_field_response,
+            field="amount",
+            response_schema=SingleCategoryModel,
+        )
         assert "150" in result
         assert "technology" not in result
 
@@ -580,7 +758,33 @@ class TestExtractConfidence:
         from llm_structured_confidence import extract_confidence
         result = extract_confidence(vertex_batch_scalar, field="category")
         assert result["top_alternative"] == "sport"
+        assert result["top_alternative_resolved"] is None
         assert isinstance(result["top_alternative_probability"], float)
+
+    def test_top_alternative_resolved_with_model(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(
+            vertex_batch_scalar,
+            field="category",
+            response_schema=SingleCategoryModel,
+        )
+        assert result["top_alternative"] == "sport"
+        assert result["top_alternative_resolved"] == "sports"
+
+    def test_response_schema_auto_detects_field(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(vertex_batch_scalar, response_schema=SingleCategoryModel)
+        assert result["value"] == "health and wellness"
+        assert result["top_alternative_resolved"] == "sports"
+
+    def test_json_schema_resolves_top_alternative(self, vertex_batch_scalar):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(
+            vertex_batch_scalar,
+            field="category",
+            response_schema=CLASSIFICATION_JSON_SCHEMA,
+        )
+        assert result["top_alternative_resolved"] == "sports"
 
     def test_error_on_bad_input(self):
         from llm_structured_confidence import extract_confidence
@@ -611,9 +815,11 @@ class TestAddConfidenceColumns:
         assert "confidence_prob" in result.columns
         assert "confidence_joint_prob" in result.columns
         assert "confidence_top_alt" in result.columns
+        assert "confidence_top_alt_resolved" in result.columns
         assert "confidence_top_alt_prob" in result.columns
         assert "confidence_error" in result.columns
         assert list(result["confidence_value"]) == ["health and wellness", "health and wellness"]
+        assert result["confidence_top_alt_resolved"].isna().all()
         assert all(result["confidence_error"].isna())
 
     def test_custom_prefix(self, vertex_batch_scalar):
@@ -624,6 +830,19 @@ class TestAddConfidenceColumns:
         result = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
         assert "conf_value" in result.columns
         assert "conf_prob" in result.columns
+
+    def test_response_schema_populates_resolved_top_alt_column(self, vertex_batch_scalar):
+        import pandas as pd
+        from llm_structured_confidence import add_confidence_columns
+
+        df = pd.DataFrame([{"response": vertex_batch_scalar}])
+        result = add_confidence_columns(
+            df,
+            response_column="response",
+            field="category",
+            response_schema=SingleCategoryModel,
+        )
+        assert list(result["confidence_top_alt_resolved"]) == ["sports"]
 
     def test_does_not_mutate_original(self, vertex_batch_scalar):
         import pandas as pd

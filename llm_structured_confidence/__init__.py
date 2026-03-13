@@ -11,12 +11,15 @@ Usage::
 
 from __future__ import annotations
 
-import enum
 import json
-import typing
 from typing import Any
 
-from ._converter import NormalizedResponse, NormalizedToken, normalize_response
+from ._classification import (
+    classification_values_by_field,
+    detect_classification_fields,
+    extract_top_alternatives,
+)
+from ._converter import NormalizedToken, normalize_response
 from ._parser import (
     _ValueSpan,
     build_token_char_ranges,
@@ -43,7 +46,7 @@ def extract_field_logprobs(
     response: Any,
     *,
     field: str | None = None,
-    model: type | None = None,
+    response_schema: type | dict[str, Any] | None = None,
 ) -> dict[str, FieldLogprob]:
     """Extract logprob metrics for values in a structured JSON response.
 
@@ -55,11 +58,10 @@ def extract_field_logprobs(
         Also accepts raw dicts from the OpenAI / Vertex AI batch APIs.
     field
         JSON field name to analyse (e.g. ``"category"``).  Takes precedence
-        over *model*.
-    model
-        Optional Pydantic model class.  When *field* is ``None``, the model
-        is inspected to auto-detect ``Enum`` / ``list[Enum]`` /
-        ``Literal[...]`` fields.
+        over *response_schema*.
+    response_schema
+        Optional Pydantic model class or JSON Schema dict. When *field* is
+        ``None``, the schema is inspected to auto-detect enum-valued fields.
 
     Returns
     -------
@@ -70,7 +72,8 @@ def extract_field_logprobs(
     """
     normalized = normalize_response(response)
 
-    target_fields = _resolve_target_fields(field, model, normalized.content)
+    target_fields = _resolve_target_fields(field, response_schema, normalized.content)
+    allowed_values_by_field = classification_values_by_field(response_schema)
 
     parsed = parse_json_spans(normalized.content)
     if not isinstance(parsed, dict):
@@ -88,13 +91,23 @@ def extract_field_logprobs(
         field_value = parsed[fname]
 
         if isinstance(field_value, _ValueSpan):
-            fl = _build_field_logprob(field_value, normalized.tokens, token_ranges)
+            fl = _build_field_logprob(
+                field_value,
+                normalized.tokens,
+                token_ranges,
+                allowed_values=allowed_values_by_field.get(fname),
+            )
             result[str(field_value.value)] = fl
 
         elif isinstance(field_value, list):
             for item in field_value:
                 if isinstance(item, _ValueSpan):
-                    fl = _build_field_logprob(item, normalized.tokens, token_ranges)
+                    fl = _build_field_logprob(
+                        item,
+                        normalized.tokens,
+                        token_ranges,
+                        allowed_values=allowed_values_by_field.get(fname),
+                    )
                     result[str(item.value)] = fl
 
     return result
@@ -106,6 +119,8 @@ def _build_field_logprob(
     span: _ValueSpan,
     normalized_tokens: list[NormalizedToken],
     token_ranges: list[tuple[int, int]],
+    *,
+    allowed_values: list[Any] | None = None,
 ) -> FieldLogprob:
     """Compute all metrics for one atomic value span."""
     token_infos = tokens_for_span(
@@ -120,6 +135,7 @@ def _build_field_logprob(
         span.char_end,
         normalized_tokens,
         token_ranges,
+        allowed_values=allowed_values,
     )
 
     return FieldLogprob.compute(span.value, token_infos, top_alts)
@@ -130,6 +146,8 @@ def _extract_top_logprobs(
     char_end: int,
     normalized_tokens: list[NormalizedToken],
     token_ranges: list[tuple[int, int]],
+    *,
+    allowed_values: list[Any] | None = None,
 ) -> list[TopAlternative]:
     """Get ``top_logprobs`` from the first non-zero token in the span.
 
@@ -138,34 +156,24 @@ def _extract_top_logprobs(
     constraints the remaining tokens are typically deterministic.
     """
     indices = get_overlapping_indices(char_start, char_end, token_ranges)
-    for idx in indices:
-        nt = normalized_tokens[idx]
-        if nt.logprob != 0.0 and nt.top_logprobs:
-            return [
-                TopAlternative(token=tok, logprob=lp)
-                for tok, lp in nt.top_logprobs
-            ]
-    if indices:
-        nt = normalized_tokens[indices[0]]
-        if nt.top_logprobs:
-            return [
-                TopAlternative(token=tok, logprob=lp)
-                for tok, lp in nt.top_logprobs
-            ]
-    return []
+    return extract_top_alternatives(
+        indices,
+        normalized_tokens,
+        allowed_values=allowed_values,
+    )
 
 
 def _resolve_target_fields(
     field: str | None,
-    model: type | None,
+    response_schema: type | dict[str, Any] | None,
     content: str,
 ) -> list[str]:
     """Decide which JSON field(s) to analyse."""
     if field is not None:
         return [field]
 
-    if model is not None:
-        detected = _detect_classification_fields(model)
+    if response_schema is not None:
+        detected = _detect_classification_fields(response_schema)
         if detected:
             return detected
 
@@ -175,40 +183,7 @@ def _resolve_target_fields(
     return []
 
 
-def _detect_classification_fields(model: type) -> list[str]:
-    """Inspect a Pydantic model for Enum / list[Enum] / Literal fields."""
-    if not hasattr(model, "model_fields"):
-        return []
-
-    fields: list[str] = []
-    for name, field_info in model.model_fields.items():
-        annotation = field_info.annotation
-        if annotation is None:
-            continue
-
-        if _is_enum_type(annotation):
-            fields.append(name)
-            continue
-
-        origin = typing.get_origin(annotation)
-        args = typing.get_args(annotation)
-
-        if origin is list and args and _is_enum_type(args[0]):
-            fields.append(name)
-            continue
-
-        if origin is typing.Literal:
-            fields.append(name)
-            continue
-
-        if origin is list and args:
-            inner_origin = typing.get_origin(args[0])
-            if inner_origin is typing.Literal:
-                fields.append(name)
-                continue
-
-    return fields
-
-
-def _is_enum_type(annotation: Any) -> bool:
-    return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
+def _detect_classification_fields(
+    response_schema: type | dict[str, Any],
+) -> list[str]:
+    return detect_classification_fields(response_schema)

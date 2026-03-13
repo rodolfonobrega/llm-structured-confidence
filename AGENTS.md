@@ -15,7 +15,7 @@ def extract_field_logprobs(
     response: Any,           # SDK objects OR raw dicts from batch APIs (see below)
     *,
     field: str | None,       # JSON field name, e.g. "category"
-    model: type | None,      # Pydantic model — auto-detects Enum/list[Enum]/Literal fields
+    response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema — auto-detects enum-valued fields
 ) -> dict[str, FieldLogprob]
 ```
 
@@ -27,7 +27,9 @@ Supported response types:
 
 Returns dict keyed by **value as string**. Scalar field → 1 entry. Array field → 1 entry per element.
 
-Priority: `field` > `model` > all fields.
+Priority: `field` > `response_schema` > all fields.
+
+Internally, `response_schema` is normalized to plain JSON Schema before field detection and enum resolution.
 
 ## FieldLogprob attributes
 
@@ -58,6 +60,7 @@ char_end: int
 ```
 token: str
 logprob: float
+resolved_value: Any | None  # full enum/literal value when uniquely resolvable via response_schema=
 probability: float  # property, exp(logprob)
 ```
 
@@ -66,6 +69,8 @@ probability: float  # property, exp(logprob)
 - `mean_nonzero_probability` — **use this for ENUM classification**. Only averages tokens where the model had a real choice. With ENUMs, only the first token carries uncertainty; the rest are deterministic (logprob=0). This avoids inflating confidence for longer category names.
 - `joint_probability` — strictest, penalizes longer values.
 - `mean_probability` — geometric mean, fair across different token counts.
+
+`resolved_value` is only populated when `response_schema=` provides the allowed Enum/Literal values and a token prefix matches exactly one value. Ambiguous prefixes stay `None`.
 
 ## Examples
 
@@ -83,6 +88,14 @@ for value, fl in result.items():
     print(fl.mean_nonzero_probability)  # 0.845
     print(fl.top_logprobs[0].token)     # "health"
     print(fl.top_logprobs[1].token)     # "tech" (technology prefix)
+
+# With response_schema=... the raw token is preserved and the full category is also exposed:
+result = extract_field_logprobs(resp, response_schema=SingleCategory)
+value, fl = next(iter(result.items()))
+print(fl.top_logprobs[0].token)           # "health"
+print(fl.top_logprobs[0].resolved_value)  # "health and wellness"
+print(fl.top_logprobs[1].token)           # "tech"
+print(fl.top_logprobs[1].resolved_value)  # "technology"
 
 # Or unpack the single entry directly:
 value, fl = next(iter(result.items()))
@@ -104,7 +117,7 @@ for value, fl in result.items():
 # technology: 0.916
 ```
 
-### Pydantic auto-detection
+### Response schema auto-detection
 
 ```python
 class CategoryEnum(str, Enum):
@@ -117,8 +130,19 @@ class SingleCategory(BaseModel):
 class MultiCategory(BaseModel):
     categories: list[CategoryEnum]
 
-result = extract_field_logprobs(resp, model=SingleCategory)   # detects "category"
-result = extract_field_logprobs(resp, model=MultiCategory)    # detects "categories"
+result = extract_field_logprobs(resp, response_schema=SingleCategory)   # detects "category"
+result = extract_field_logprobs(resp, response_schema=MultiCategory)    # detects "categories"
+
+schema = {
+    "type": "object",
+    "properties": {
+        "category": {"type": "string", "enum": ["health and wellness", "sports"]}
+    },
+    "required": ["category"],
+    "additionalProperties": False,
+}
+
+result = extract_field_logprobs(resp, response_schema=schema)           # detects "category"
 ```
 
 ### google-genai SDK
@@ -166,7 +190,8 @@ from llm_structured_confidence import add_confidence_columns
 df = pd.read_json("vertex_batch_output.jsonl", lines=True)
 df = add_confidence_columns(df, response_column="response", field="category")
 # Adds: confidence_value, confidence_prob, confidence_joint_prob,
-#        confidence_top_alt, confidence_top_alt_prob, confidence_error
+#        confidence_top_alt, confidence_top_alt_resolved,
+#        confidence_top_alt_prob, confidence_error
 
 # OpenAI batch output — extract body first
 df = pd.read_json("openai_batch_output.jsonl", lines=True)
@@ -175,7 +200,7 @@ df = add_confidence_columns(df, response_column="body", field="category")
 
 # Custom prefix
 df = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
-# Adds: conf_value, conf_prob, conf_joint_prob, conf_top_alt, conf_top_alt_prob, conf_error
+# Adds: conf_value, conf_prob, conf_joint_prob, conf_top_alt, conf_top_alt_resolved, conf_top_alt_prob, conf_error
 ```
 
 For single-response extraction into a flat dict:
@@ -191,6 +216,7 @@ metrics = extract_confidence(row["response"], field="category")
 #     "mean_probability": 0.9999,
 #     "mean_nonzero_probability": 0.9999,
 #     "top_alternative": "science",
+#     "top_alternative_resolved": "science and research",
 #     "top_alternative_probability": 0.0001,
 #     "top_logprobs": [("technology", 0.9999), ("science", 0.0001), ...],
 #     "error": None,
@@ -233,6 +259,7 @@ APIs in `_parser` and `_converter` are internal; may change in minor releases.
 ```
 llm_structured_confidence/
   __init__.py    # extract_field_logprobs(), Pydantic detection
+  _classification.py  # Enum/Literal field detection + token-prefix resolution
   _types.py      # FieldLogprob, TokenInfo, TopAlternative
   _parser.py     # Lark JSON parser, char-range overlap logic
   _converter.py  # normalizes litellm/OpenAI/google-genai/raw dicts → internal format

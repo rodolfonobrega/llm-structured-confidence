@@ -131,12 +131,12 @@ def test_e2e_scalar():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Pydantic model auto-detection
+# Response schema auto-detection
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_e2e_pydantic_detection():
     resp = _call("Yoga and meditation retreat in the mountains")
-    result = extract_field_logprobs(resp, model=SingleCategory)
+    result = extract_field_logprobs(resp, response_schema=SingleCategory)
     assert len(result) == 1
     value = list(result.keys())[0]
     assert value in CATEGORY_NAMES
