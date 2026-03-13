@@ -4,7 +4,7 @@ Extract per-field confidence scores from LLM structured JSON outputs using token
 
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python->=3.10-3776ab?style=flat-square)](https://www.python.org)
-[![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square)](https://pypi.org/project/llm-structured-confidence/)
+[![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square&cacheSeconds=300)](https://pypi.org/project/llm-structured-confidence/)
 
 [The Problem](#the-problem) • [Installation](#installation) • [Quick Start](#quick-start) • [Features](#features) • [API Reference](#api-reference) • [Supported Providers](#supported-providers)
 
@@ -375,7 +375,7 @@ Release automation for PyPI via GitHub Actions is documented in [RELEASING.md](R
 For the common release flow, you can also use:
 
 ```bash
-./scripts/release.sh 0.1.1
+./scripts/release.sh X.Y.Z
 ```
 
 The script refuses to run outside `main`, with a dirty Git tree, without `gh` auth, or if the release tag already exists.
