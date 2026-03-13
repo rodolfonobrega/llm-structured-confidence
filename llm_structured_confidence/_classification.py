@@ -38,13 +38,33 @@ def normalize_response_schema(
 
     if hasattr(response_schema, "model_json_schema"):
         schema = response_schema.model_json_schema()
-        return _resolve_local_refs(schema) if isinstance(schema, dict) else None
+        normalized = _resolve_local_refs(schema) if isinstance(schema, dict) else None
+        return _normalize_schema_types(normalized) if normalized else None
 
     if isinstance(response_schema, dict):
         unwrapped = _unwrap_json_schema(response_schema)
-        return _resolve_local_refs(unwrapped) if isinstance(unwrapped, dict) else None
+        normalized = _resolve_local_refs(unwrapped) if isinstance(unwrapped, dict) else None
+        return _normalize_schema_types(normalized) if normalized else None
 
     return None
+
+
+def _normalize_schema_types(schema: dict[str, Any]) -> dict[str, Any]:
+    """Recursively normalize 'type' values to lowercase for case-insensitive matching."""
+    if not isinstance(schema, dict):
+        return schema
+
+    normalized = {}
+    for key, value in schema.items():
+        if key == "type" and isinstance(value, str):
+            normalized[key] = value.lower()
+        elif isinstance(value, dict):
+            normalized[key] = _normalize_schema_types(value)
+        elif isinstance(value, list):
+            normalized[key] = [_normalize_schema_types(item) if isinstance(item, dict) else item for item in value]
+        else:
+            normalized[key] = value
+    return normalized
 
 
 def extract_top_alternatives(

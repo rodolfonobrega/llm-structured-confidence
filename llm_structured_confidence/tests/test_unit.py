@@ -193,6 +193,50 @@ class TestResponseSchemaNormalization:
             "classifications[].name"
         ] == ["Positive", "Negative", "Neutral"]
 
+    def test_uppercase_type_is_normalized(self):
+        """Schemas with uppercase TYPE values should be normalized to lowercase."""
+        uppercase_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "category": {
+                    "type": "STRING",
+                    "enum": ["Positive", "Negative", "Neutral"]
+                }
+            }
+        }
+        schema = normalize_response_schema(uppercase_schema)
+        assert schema["type"] == "object"
+        assert schema["properties"]["category"]["type"] == "string"
+
+        # Detection should work despite uppercase
+        assert detect_classification_paths(uppercase_schema) == ["category"]
+        assert classification_values_by_path(uppercase_schema)["category"] == [
+            "Positive", "Negative", "Neutral"
+        ]
+
+    def test_mixedcase_type_in_nested_schema(self):
+        """Nested schemas with mixed-case types should be normalized."""
+        mixed_schema = {
+            "type": "Object",
+            "properties": {
+                "items": {
+                    "type": "Array",
+                    "items": {
+                        "type": "String",
+                        "enum": ["A", "B", "C"]
+                    }
+                }
+            }
+        }
+        schema = normalize_response_schema(mixed_schema)
+        assert schema["type"] == "object"
+        assert schema["properties"]["items"]["type"] == "array"
+        assert schema["properties"]["items"]["items"]["type"] == "string"
+
+        # Detection should work
+        assert detect_classification_paths(mixed_schema) == ["items[]"]
+        assert classification_values_by_path(mixed_schema)["items[]"] == ["A", "B", "C"]
+
 
 class TestFieldLogprobCompute:
 

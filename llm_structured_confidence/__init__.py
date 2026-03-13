@@ -8,7 +8,7 @@ from ._extract import extract_logprob_entries
 from ._pandas import add_confidence_columns, extract_confidence
 from ._types import FieldLogprob, PathFieldLogprob, TokenInfo, TopAlternative
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "extract_logprobs",
