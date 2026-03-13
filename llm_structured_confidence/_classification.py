@@ -1,4 +1,4 @@
-"""Helpers for schema-driven classification detection and enum-value resolution."""
+"""Helpers for schema-driven path detection and enum-value resolution."""
 
 from __future__ import annotations
 
@@ -9,14 +9,6 @@ from ._converter import NormalizedToken
 from ._types import TopAlternative
 
 
-def detect_classification_fields(response_schema: type | dict[str, Any] | None) -> list[str]:
-    """Inspect a response schema for classification fields."""
-    normalized = normalize_response_schema(response_schema)
-    if not normalized:
-        return []
-    return list(_json_schema_values_by_field(normalized).keys())
-
-
 def detect_classification_paths(
     response_schema: type | dict[str, Any] | None,
 ) -> list[str]:
@@ -24,17 +16,7 @@ def detect_classification_paths(
     normalized = normalize_response_schema(response_schema)
     if not normalized:
         return []
-    return list(_json_schema_values_by_path(normalized).keys())
-
-
-def classification_values_by_field(
-    response_schema: type | dict[str, Any] | None,
-) -> dict[str, list[Any]]:
-    """Return allowed classification values for each detectable schema field."""
-    normalized = normalize_response_schema(response_schema)
-    if not normalized:
-        return {}
-    return _json_schema_values_by_field(normalized)
+    return list(classification_values_by_path(normalized).keys())
 
 
 def classification_values_by_path(
@@ -117,21 +99,6 @@ def _first_top_logprobs(
         if nt.top_logprobs:
             return nt.top_logprobs
     return []
-
-
-def _json_schema_values_by_field(response_schema: dict[str, Any]) -> dict[str, list[Any]]:
-    properties = response_schema.get("properties")
-    if not isinstance(properties, dict):
-        return {}
-
-    values: dict[str, list[Any]] = {}
-    for name, property_schema in properties.items():
-        if not isinstance(property_schema, dict):
-            continue
-        choices = _json_schema_choices(property_schema)
-        if choices:
-            values[name] = choices
-    return values
 
 
 def _json_schema_values_by_path(

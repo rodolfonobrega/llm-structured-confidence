@@ -3,8 +3,7 @@
 Quick reference for the public API of `llm-structured-confidence`.
 
 This guide covers:
-- `extract_field_logprobs(...)`
-- `extract_path_logprobs(...)`
+- `extract_logprobs(...)`
 - `extract_confidence(...)`
 - `add_confidence_columns(...)`
 - `FieldLogprob`
@@ -28,8 +27,7 @@ pip install "llm-structured-confidence[pandas]"
 
 ```python
 from llm_structured_confidence import (
-    extract_field_logprobs,
-    extract_path_logprobs,
+    extract_logprobs,
     extract_confidence,
     add_confidence_columns,
     FieldLogprob,
@@ -51,36 +49,78 @@ You can pass any of these as `response`:
 
 The LLM call must include token logprobs.
 
-## Main Method: `extract_field_logprobs(...)`
+## Main Method: `extract_logprobs(...)`
 
 ```python
-def extract_field_logprobs(
+def extract_logprobs(
     response,
     *,
-    field: str | None = None,
+    field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
-) -> dict[str, FieldLogprob]
+) -> list[PathFieldLogprob]
 ```
 
 Behavior:
 
-- `field=` explicitly selects the JSON key to analyze
-- `response_schema=` auto-detects enum-valued fields from either:
-  - a Pydantic model
-  - a JSON Schema dict
-- precedence is: `field` > `response_schema` > all top-level fields
+- `field_path=` explicitly selects an atomic JSON value
+- `response_schema=` auto-detects enum-valued paths recursively
+- if neither is provided, all atomic values in the JSON are returned
+- return order follows the JSON order
 
-### Example: explicit field
+## Path Syntax
+
+Use:
+
+- `.` for object traversal
+- `[]` for arrays
+
+Examples:
+
+- `category`
+- `categories[]`
+- `classification.name`
+- `classifications[].name`
+- `groups[].items[].label`
+
+## Examples
+
+### Scalar field
 
 ```python
-result = extract_field_logprobs(response, field="category")
+entries = extract_logprobs(response, field_path="category")
+entry = entries[0]
 
-value, fl = next(iter(result.items()))
-print(value)
-print(fl.mean_nonzero_probability)
+print(entry.path)                                    # category
+print(entry.value)                                   # health and wellness
+print(entry.field_logprob.mean_nonzero_probability)  # 0.845
 ```
 
-### Example: Pydantic schema
+### Simple array of strings
+
+```python
+# {"classifications": ["Positive", "Negative", "Neutral"]}
+entries = extract_logprobs(response, field_path="classifications[]")
+
+for entry in entries:
+    print(entry.path, entry.value)
+```
+
+### Nested array of objects
+
+```python
+# {
+#   "classifications": [
+#     {"id": 0, "name": "Positive", "color": "#00FF00"},
+#     {"id": 1, "name": "Negative", "color": "#FF0000"},
+#   ]
+# }
+entries = extract_logprobs(response, field_path="classifications[].name")
+
+for entry in entries:
+    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+```
+
+### Pydantic schema auto-detection
 
 ```python
 from enum import Enum
@@ -97,104 +137,14 @@ class Classification(BaseModel):
     category: CategoryEnum
 
 
-result = extract_field_logprobs(response, response_schema=Classification)
+entries = extract_logprobs(response, response_schema=Classification)
+print(entries[0].path)   # category
+print(entries[0].value)  # health and wellness
 ```
 
-### Example: JSON Schema
+### Nested schema auto-detection
 
 ```python
-schema = {
-    "type": "object",
-    "properties": {
-        "category": {
-            "type": "string",
-            "enum": ["sports", "health and wellness", "technology"],
-        }
-    },
-    "required": ["category"],
-    "additionalProperties": False,
-}
-
-result = extract_field_logprobs(response, response_schema=schema)
-```
-
-### Example: array field
-
-```python
-# {"categories": ["health and wellness", "sports", "technology"]}
-result = extract_field_logprobs(response, field="categories")
-
-for value, fl in result.items():
-    print(value, fl.mean_nonzero_probability)
-```
-
-### Example: simple array of strings
-
-```python
-# {"classifications": ["Positive", "Negative", "Neutral"]}
-result = extract_field_logprobs(response, field="classifications")
-
-for value, fl in result.items():
-    print(value, fl.mean_nonzero_probability)
-```
-
-This works because the array elements are atomic values. If you need to preserve
-positions, use:
-
-```python
-results = extract_path_logprobs(response, field_path="classifications[]")
-
-print(results[0].path)   # classifications[0]
-print(results[0].value)  # Positive
-```
-
-## Nested Paths: `extract_path_logprobs(...)`
-
-Use this when the values you want are inside nested objects or arrays of objects.
-
-```python
-def extract_path_logprobs(
-    response,
-    *,
-    field_path: str | None = None,
-    response_schema: type | dict[str, Any] | None = None,
-) -> list[PathFieldLogprob]
-```
-
-Behavior:
-
-- `field_path=` selects an atomic JSON value using:
-  - `.` for object traversal
-  - `[]` for arrays
-- examples:
-  - `classification.name`
-  - `classifications[].name`
-  - `groups[].items[].label`
-- if `field_path` is omitted and `response_schema=` is provided, enum-valued paths are auto-detected recursively
-- return order matches the JSON order, so repeated values do not collide
-
-### Example: explicit nested path
-
-```python
-# {
-#   "classifications": [
-#     {"id": 0, "name": "Positive", "color": "#00FF00"},
-#     {"id": 1, "name": "Negative", "color": "#FF0000"},
-#   ]
-# }
-results = extract_path_logprobs(response, field_path="classifications[].name")
-
-for entry in results:
-    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
-```
-
-### Example: nested auto-detection with Pydantic
-
-```python
-from enum import Enum
-from pydantic import BaseModel
-
-
 class Label(str, Enum):
     positive = "Positive"
     negative = "Negative"
@@ -211,14 +161,14 @@ class Output(BaseModel):
     classifications: list[ClassificationItem]
 
 
-results = extract_path_logprobs(response, response_schema=Output)
-print(results[0].path)   # classifications[0].name
-print(results[0].value)  # Positive
+entries = extract_logprobs(response, response_schema=Output)
+print(entries[0].path)   # classifications[0].name
+print(entries[0].value)  # Positive
 ```
 
 ## Return Type: `PathFieldLogprob`
 
-Each path-aware result contains:
+Each result contains:
 
 - `path`: resolved path, e.g. `classifications[0].name`
 - `value`: parsed Python value
@@ -227,39 +177,27 @@ Each path-aware result contains:
 Example:
 
 ```python
-entry = results[0]
+entry = entries[0]
+fl = entry.field_logprob
 
 print(entry.path)
 print(entry.value)
-print(entry.field_logprob.top_logprobs[0].resolved_value)
+print(fl.top_logprobs[0].resolved_value)
 ```
 
 ## Return Type: `FieldLogprob`
 
-Each extracted value maps to one `FieldLogprob`.
-
 Attributes:
 
-- `value`: parsed Python value
-- `tokens`: list of `TokenInfo`
+- `value`
+- `tokens`
 - `joint_logprob`
 - `joint_probability`
 - `mean_logprob`
 - `mean_probability`
 - `mean_nonzero_logprob`
 - `mean_nonzero_probability`
-- `top_logprobs`: list of `TopAlternative`
-
-Example:
-
-```python
-fl = result["health and wellness"]
-
-print(fl.value)
-print(fl.joint_probability)
-print(fl.mean_probability)
-print(fl.mean_nonzero_probability)
-```
+- `top_logprobs`
 
 ## Inspecting Tokens: `TokenInfo`
 
@@ -270,13 +208,6 @@ Each included token has:
 - `probability`
 - `char_start`
 - `char_end`
-
-Example:
-
-```python
-for token in fl.tokens:
-    print(token.token, token.logprob, token.probability)
-```
 
 ## Top Alternatives: `TopAlternative`
 
@@ -295,19 +226,11 @@ Each top alternative has:
 Example:
 
 ```python
-result = extract_field_logprobs(response, response_schema=Classification)
-fl = result["health and wellness"]
+entries = extract_logprobs(response, response_schema=Classification)
+fl = entries[0].field_logprob
 
 for alt in fl.top_logprobs:
     print(alt.token, alt.probability, alt.resolved_value)
-```
-
-Example output:
-
-```python
-health 0.8451 health and wellness
-tech 0.1547 technology
-sport 0.0001 sports
 ```
 
 If the prefix is ambiguous, `resolved_value` stays `None`.
@@ -318,7 +241,6 @@ If the prefix is ambiguous, `resolved_value` stays `None`.
 def extract_confidence(
     response,
     *,
-    field: str | None = None,
     field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
 ) -> dict[str, Any]
@@ -353,9 +275,8 @@ Returned keys:
 
 Notes:
 
-- `field_path` takes precedence over `field`
-- `top_alternative` is the best alternative after the chosen token/value
-- on failure, the helper returns `error` instead of raising
+- the helper always returns the first matching value
+- on failure, it returns `error` instead of raising
 
 ## DataFrame Helper: `add_confidence_columns(...)`
 
@@ -364,7 +285,6 @@ def add_confidence_columns(
     df,
     *,
     response_column: str = "response",
-    field: str | None = None,
     field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
     prefix: str = "confidence",
@@ -373,9 +293,7 @@ def add_confidence_columns(
 
 Use this for batch API outputs loaded into pandas.
 
-If `field_path=` is used, the helper takes the first matching value and also adds `{prefix}_path`.
-
-Example: Vertex AI batch output
+Example:
 
 ```python
 import pandas as pd
@@ -384,20 +302,7 @@ df = pd.read_json("vertex_batch_output.jsonl", lines=True)
 df = add_confidence_columns(
     df,
     response_column="response",
-    field="category",
-    response_schema=Classification,
-)
-```
-
-Example: OpenAI batch output
-
-```python
-df = pd.read_json("openai_batch_output.jsonl", lines=True)
-df["body"] = df["response"].apply(lambda r: r["body"])
-df = add_confidence_columns(
-    df,
-    response_column="body",
-    field="category",
+    field_path="classifications[].name",
 )
 ```
 
@@ -429,13 +334,13 @@ Why `mean_nonzero_probability` matters:
 ### OpenAI batch
 
 ```python
-result = extract_field_logprobs(batch_row["response"]["body"], field="category")
+entries = extract_logprobs(batch_row["response"]["body"], field_path="category")
 ```
 
 ### Vertex AI batch
 
 ```python
-result = extract_field_logprobs(batch_row["response"], field="category")
+entries = extract_logprobs(batch_row["response"], field_path="category")
 ```
 
 ## Lower-level Internal Modules
@@ -451,8 +356,6 @@ from llm_structured_confidence._parser import (
 )
 from llm_structured_confidence._converter import normalize_response
 ```
-
-Use them only if you need custom parsing/token workflows.
 
 Example: nested arrays of objects are preserved in the parsed tree, with `_ValueSpan`
 only at atomic leaves.
@@ -476,5 +379,5 @@ To get reliable results:
 
 - enable logprobs in the LLM call
 - use structured output / JSON schema
-- pass `field=` when you know the target key
+- pass `field_path=` when you know the target path
 - pass `response_schema=` when you want enum auto-detection and `resolved_value`

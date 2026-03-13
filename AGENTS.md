@@ -1,13 +1,14 @@
 # llm-structured-confidence
 
-Extract per-field confidence from LLM structured JSON responses with logprobs.
+Extract path-aware confidence from LLM structured JSON responses with logprobs.
 
 ## Import
 
 ```python
 from llm_structured_confidence import (
-    extract_field_logprobs,
-    extract_path_logprobs,
+    extract_logprobs,
+    extract_confidence,
+    add_confidence_columns,
     FieldLogprob,
     PathFieldLogprob,
     TokenInfo,
@@ -15,156 +16,118 @@ from llm_structured_confidence import (
 )
 ```
 
-## Function
+## Main Function
 
 ```python
-def extract_field_logprobs(
-    response: Any,           # SDK objects OR raw dicts from batch APIs (see below)
+def extract_logprobs(
+    response: Any,           # SDK objects OR raw dicts from batch APIs
     *,
-    field: str | None,       # JSON field name, e.g. "category"
-    response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema — auto-detects enum-valued fields
-) -> dict[str, FieldLogprob]
-
-def extract_path_logprobs(
-    response: Any,
-    *,
-    field_path: str | None,  # Nested atomic path, e.g. "classifications[].name"
-    response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema — auto-detects enum-valued paths recursively
+    field_path: str | None,  # Atomic path, e.g. "category", "categories[]", "classifications[].name"
+    response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema
 ) -> list[PathFieldLogprob]
 ```
 
 Supported response types:
-- `litellm.ModelResponse` / `openai.ChatCompletion` (SDK objects with `.choices`)
-- `google.genai.GenerateContentResponse` (SDK object with `.candidates`)
-- Raw `dict` with `"choices"` key (OpenAI batch API response body)
-- Raw `dict` with `"candidates"` key (Vertex AI batch API response, camelCase)
+- `litellm.ModelResponse` / `openai.ChatCompletion`
+- `google.genai.GenerateContentResponse`
+- raw `dict` with `"choices"` key
+- raw `dict` with `"candidates"` key
 
-Returns dict keyed by **value as string**. Scalar field → 1 entry. Array field → 1 entry per element.
+Behavior:
+- `field_path=` explicitly selects an atomic value
+- `response_schema=` auto-detects enum-valued paths recursively
+- if neither is provided, all atomic values are returned
+- results preserve JSON order and repeated values
 
-Priority: `field` > `response_schema` > all fields.
+Internally, `response_schema` is normalized to plain JSON Schema before path detection and enum resolution.
 
-For nested objects / arrays of objects, use `extract_path_logprobs(...)`. It preserves item order and repeated values via resolved paths such as `classifications[0].name`.
+## Path Syntax
 
-Internally, `response_schema` is normalized to plain JSON Schema before field detection and enum resolution.
-
-## FieldLogprob attributes
-
-```
-value: Any                          # parsed value
-tokens: list[TokenInfo]             # tokens used in calculation
-joint_logprob: float                # sum(logprobs)
-joint_probability: float            # exp(joint_logprob) — product of all token probs
-mean_logprob: float                 # mean(logprobs)
-mean_probability: float             # exp(mean_logprob) — geometric mean
-mean_nonzero_logprob: float | None  # mean of logprobs where logprob != 0
-mean_nonzero_probability: float | None  # exp(mean_nonzero_logprob) — best for ENUM
-top_logprobs: list[TopAlternative]  # alternatives from first uncertain token
+```python
+"category"
+"categories[]"
+"classification.name"
+"classifications[].name"
+"groups[].items[].label"
 ```
 
 ## PathFieldLogprob attributes
 
-```
+```python
 path: str               # resolved path, e.g. "classifications[0].name"
 value: Any              # parsed value
 field_logprob: FieldLogprob
 ```
 
+## FieldLogprob attributes
+
+```python
+value: Any
+tokens: list[TokenInfo]
+joint_logprob: float
+joint_probability: float
+mean_logprob: float
+mean_probability: float
+mean_nonzero_logprob: float | None
+mean_nonzero_probability: float | None
+top_logprobs: list[TopAlternative]
+```
+
 ## TokenInfo attributes
 
-```
+```python
 token: str
 logprob: float
-probability: float  # property, exp(logprob)
+probability: float
 char_start: int
 char_end: int
 ```
 
 ## TopAlternative attributes
 
-```
+```python
 token: str
 logprob: float
-resolved_value: Any | None  # full enum/literal value when uniquely resolvable via response_schema=
-probability: float  # property, exp(logprob)
+resolved_value: Any | None
+probability: float
 ```
+
+`resolved_value` is only populated when `response_schema=` provides the allowed Enum/Literal values and a token prefix matches exactly one value. Ambiguous prefixes stay `None`.
 
 ## Which metric to use
 
-- `mean_nonzero_probability` — **use this for ENUM classification**. Only averages tokens where the model had a real choice. With ENUMs, only the first token carries uncertainty; the rest are deterministic (logprob=0). This avoids inflating confidence for longer category names.
-- `joint_probability` — strictest, penalizes longer values.
-- `mean_probability` — geometric mean, fair across different token counts.
-
-`resolved_value` is only populated when `response_schema=` provides the allowed Enum/Literal values and a token prefix matches exactly one value. Ambiguous prefixes stay `None`.
+- `mean_nonzero_probability` — use this for ENUM classification
+- `joint_probability` — strictest, penalizes longer values
+- `mean_probability` — geometric mean, fair across token counts
 
 ## Examples
 
 ### Scalar field
 
 ```python
-resp = litellm.completion(model="gpt-4.1-mini", messages=[...],
-    response_format=json_schema, logprobs=True, top_logprobs=5)
+entries = extract_logprobs(resp, field_path="category")
+entry = entries[0]
 
-result = extract_field_logprobs(resp, field="category")
-
-# Iterate — you don't need to know the value beforehand:
-for value, fl in result.items():
-    print(value)                        # "health and wellness"
-    print(fl.mean_nonzero_probability)  # 0.845
-    print(fl.top_logprobs[0].token)     # "health"
-    print(fl.top_logprobs[1].token)     # "tech" (technology prefix)
-
-# With response_schema=... the raw token is preserved and the full category is also exposed:
-result = extract_field_logprobs(resp, response_schema=SingleCategory)
-value, fl = next(iter(result.items()))
-print(fl.top_logprobs[0].token)           # "health"
-print(fl.top_logprobs[0].resolved_value)  # "health and wellness"
-print(fl.top_logprobs[1].token)           # "tech"
-print(fl.top_logprobs[1].resolved_value)  # "technology"
-
-# Or unpack the single entry directly:
-value, fl = next(iter(result.items()))
-
-# Or access by value if you already know it:
-fl = result["health and wellness"]
+print(entry.path)                                    # "category"
+print(entry.value)                                   # "health and wellness"
+print(entry.field_logprob.mean_nonzero_probability)  # 0.845
 ```
 
 ### Array field
 
 ```python
-# Response: {"categories": ["health and wellness", "sports", "technology"]}
-result = extract_field_logprobs(resp, field="categories")
+entries = extract_logprobs(resp, field_path="categories[]")
 
-for value, fl in result.items():
-    print(f"{value}: {fl.mean_nonzero_probability}")
-# health and wellness: 0.845
-# sports: 0.951
-# technology: 0.916
-```
-
-### Simple array of strings
-
-```python
-# Response: {"classifications": ["Positive", "Negative", "Neutral"]}
-result = extract_field_logprobs(resp, field="classifications")
-
-for value, fl in result.items():
-    print(f"{value}: {fl.mean_nonzero_probability}")
-```
-
-If repeated values are possible and you need positions, use:
-
-```python
-result = extract_path_logprobs(resp, field_path="classifications[]")
-print(result[0].path)   # "classifications[0]"
-print(result[0].value)  # "Positive"
+for entry in entries:
+    print(entry.path, entry.value)
 ```
 
 ### Nested path
 
 ```python
-result = extract_path_logprobs(resp, field_path="classifications[].name")
+entries = extract_logprobs(resp, field_path="classifications[].name")
 
-for entry in result:
+for entry in entries:
     print(entry.path)                                   # "classifications[0].name"
     print(entry.value)                                  # "Positive"
     print(entry.field_logprob.mean_nonzero_probability) # 0.961
@@ -173,123 +136,70 @@ for entry in result:
 ### Response schema auto-detection
 
 ```python
-class CategoryEnum(str, Enum):
-    health_and_wellness = "health and wellness"
-    sports = "sports"
+entries = extract_logprobs(resp, response_schema=SingleCategory)  # category
+entries = extract_logprobs(resp, response_schema=MultiCategory)   # categories[]
+entries = extract_logprobs(resp, response_schema=schema)          # inferred paths from JSON Schema
+```
 
-class SingleCategory(BaseModel):
-    category: CategoryEnum
+### Resolved alternatives
 
-class MultiCategory(BaseModel):
-    categories: list[CategoryEnum]
+```python
+entries = extract_logprobs(resp, response_schema=SingleCategory)
+fl = entries[0].field_logprob
 
-result = extract_field_logprobs(resp, response_schema=SingleCategory)   # detects "category"
-result = extract_field_logprobs(resp, response_schema=MultiCategory)    # detects "categories"
-
-schema = {
-    "type": "object",
-    "properties": {
-        "category": {"type": "string", "enum": ["health and wellness", "sports"]}
-    },
-    "required": ["category"],
-    "additionalProperties": False,
-}
-
-result = extract_field_logprobs(resp, response_schema=schema)           # detects "category"
+print(fl.top_logprobs[0].token)           # "health"
+print(fl.top_logprobs[0].resolved_value)  # "health and wellness"
 ```
 
 ### google-genai SDK
 
 ```python
-from google import genai
-from google.genai import types
-
-client = genai.Client(vertexai=True, project="my-project", location="global")
-resp = client.models.generate_content(model="gemini-2.5-flash", contents=[...],
-    config=types.GenerateContentConfig(response_logprobs=True, logprobs=5,
-        thinking_config=types.ThinkingConfig(thinking_budget=0)))
-
-result = extract_field_logprobs(resp, field="category")  # same interface
+result = extract_logprobs(resp, field_path="category")
 ```
 
 ### Vertex AI batch API (raw dicts)
 
 ```python
-import json
-
-# Each line in the batch output JSONL has: {"id": ..., "response": {...}, ...}
-with open("vertex_batch_output.jsonl") as f:
-    for line in f:
-        row = json.loads(line)
-        # Pass the "response" dict directly — no wrapper needed
-        result = extract_field_logprobs(row["response"], field="category")
-        for value, fl in result.items():
-            print(f"{row['id']}: {value} ({fl.mean_nonzero_probability:.2%})")
+result = extract_logprobs(row["response"], field_path="category")
 ```
-
-Batch JSONL request must include `"responseLogprobs": true` and `"logprobs": N` in
-`generationConfig`. The response dict uses camelCase keys (`logprobsResult`,
-`chosenCandidates`, `logProbability`) — the library handles this automatically.
 
 ## Pandas integration
 
-For batch API outputs loaded into DataFrames:
-
 ```python
-import pandas as pd
-from llm_structured_confidence import add_confidence_columns
+from llm_structured_confidence import add_confidence_columns, extract_confidence
 
-# Vertex AI batch output
-df = pd.read_json("vertex_batch_output.jsonl", lines=True)
-df = add_confidence_columns(df, response_column="response", field="category")
-# Adds: confidence_value, confidence_path, confidence_prob, confidence_joint_prob,
-#        confidence_top_alt, confidence_top_alt_resolved,
-#        confidence_top_alt_prob, confidence_error
+metrics = extract_confidence(row["response"], field_path="category")
 
-# OpenAI batch output — extract body first
-df = pd.read_json("openai_batch_output.jsonl", lines=True)
-df["body"] = df["response"].apply(lambda r: r["body"])
-df = add_confidence_columns(df, response_column="body", field="category")
-
-# Custom prefix
-df = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
-# Adds: conf_value, conf_path, conf_prob, conf_joint_prob,
-#       conf_top_alt, conf_top_alt_resolved, conf_top_alt_prob, conf_error
+df = add_confidence_columns(
+    df,
+    response_column="response",
+    field_path="classifications[].name",
+)
 ```
 
-For single-response extraction into a flat dict:
+Added DataFrame columns:
 
 ```python
-from llm_structured_confidence import extract_confidence
-
-row = {"response": {...}}  # raw batch response dict
-metrics = extract_confidence(row["response"], field="category")
-# metrics = {
-#     "path": "category",
-#     "value": "technology",
-#     "joint_probability": 0.9999,
-#     "mean_probability": 0.9999,
-#     "mean_nonzero_probability": 0.9999,
-#     "top_alternative": "science",
-#     "top_alternative_resolved": "science and research",
-#     "top_alternative_probability": 0.0001,
-#     "top_logprobs": [("technology", 0.9999), ("science", 0.0001), ...],
-#     "error": None,
-# }
+confidence_value
+confidence_path
+confidence_prob
+confidence_joint_prob
+confidence_top_alt
+confidence_top_alt_resolved
+confidence_top_alt_prob
+confidence_error
 ```
+
+Helpers always use the first matching value.
 
 ## Lower-level API
-
-For custom workflows (parse JSON without response, build own metrics):
 
 ```python
 from llm_structured_confidence._parser import parse_json_spans, build_token_char_ranges, tokens_for_span, get_overlapping_indices
 from llm_structured_confidence._converter import normalize_response
 
-# JSON → dict with _ValueSpan(value, char_start, char_end) for each atomic value
-parsed = parse_json_spans('{"category": "bars"}')  # parsed["category"].char_start, .char_end
+parsed = parse_json_spans('{"category": "bars"}')
 
-# Nested arrays of objects keep the full structure; only atomic leaves are _ValueSpan
 parsed = parse_json_spans(
     '{"classifications":[{"id":0,"name":"Positive","color":"#00FF00"}]}'
 )
@@ -297,15 +207,10 @@ item = parsed["classifications"][0]
 print(item["id"].value)    # 0
 print(item["name"].value)  # "Positive"
 
-# Token char ranges from concatenation
 ranges = build_token_char_ranges(tokens)
-
-# Tokens overlapping a span
 indices = get_overlapping_indices(char_start, char_end, ranges)
 token_infos = tokens_for_span(char_start, char_end, normalized_tokens, ranges)
-
-# Normalize any provider response → (content, tokens)
-norm = normalize_response(response)  # norm.content, norm.tokens
+norm = normalize_response(response)
 ```
 
 APIs in `_parser` and `_converter` are internal; may change in minor releases.
@@ -314,20 +219,19 @@ APIs in `_parser` and `_converter` are internal; may change in minor releases.
 
 - `logprobs=True` and `top_logprobs=N` (litellm/OpenAI)
 - `response_logprobs=True` and `logprobs=N` (google-genai)
-- For models with reasoning/thinking: consider disabling it for cleaner logprobs (`reasoning_effort="none"` for litellm, `thinking_budget=0` for google-genai)
-- Structured output (JSON schema or Pydantic model) for reliable parsing
+- structured output (JSON schema or Pydantic model) for reliable parsing
 
 ## File structure
 
-```
+```python
 llm_structured_confidence/
-  __init__.py    # extract_field_logprobs(), Pydantic detection
-  _extract.py    # top-level + path-aware extraction helpers
-  _classification.py  # Enum/Literal field detection + token-prefix resolution
-  _types.py      # FieldLogprob, PathFieldLogprob, TokenInfo, TopAlternative
-  _parser.py     # Lark JSON parser, char-range overlap logic
-  _converter.py  # normalizes litellm/OpenAI/google-genai/raw dicts → internal format
-  _pandas.py     # add_confidence_columns(), extract_confidence()
+  __init__.py         # extract_logprobs()
+  _extract.py         # path-aware extraction helpers
+  _classification.py  # schema path detection + token-prefix resolution
+  _types.py           # FieldLogprob, PathFieldLogprob, TokenInfo, TopAlternative
+  _parser.py          # JSON span parser + overlap logic
+  _converter.py       # provider normalization
+  _pandas.py          # add_confidence_columns(), extract_confidence()
 examples/
-  examples.ipynb # usage notebook with all features
+  examples.ipynb
 ```

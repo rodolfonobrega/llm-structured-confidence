@@ -1,15 +1,12 @@
-"""Shared extraction helpers for top-level fields and nested field paths."""
+"""Shared extraction helpers built around path-aware results."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from ._classification import (
-    classification_values_by_field,
     classification_values_by_path,
-    detect_classification_fields,
     detect_classification_paths,
     extract_top_alternatives,
 )
@@ -31,60 +28,9 @@ class _SpanMatch:
     span: _ValueSpan
 
 
-def extract_field_value_map(
+def extract_logprob_entries(
     response: Any,
     *,
-    field: str | None = None,
-    response_schema: type | dict[str, Any] | None = None,
-) -> dict[str, FieldLogprob]:
-    """Extract logprobs for top-level fields only, preserving the legacy API."""
-    normalized = normalize_response(response)
-
-    target_fields = _resolve_target_fields(field, response_schema, normalized.content)
-    allowed_values_by_field = classification_values_by_field(response_schema)
-
-    parsed = parse_json_spans(normalized.content)
-    if not isinstance(parsed, dict):
-        raise ValueError(
-            f"Expected JSON object at top level, got {type(parsed).__name__}"
-        )
-
-    token_ranges = build_token_char_ranges(normalized.tokens)
-    result: dict[str, FieldLogprob] = {}
-
-    for fname in target_fields:
-        if fname not in parsed:
-            continue
-        field_value = parsed[fname]
-
-        if isinstance(field_value, _ValueSpan):
-            fl = _build_field_logprob(
-                field_value,
-                normalized.tokens,
-                token_ranges,
-                allowed_values=allowed_values_by_field.get(fname),
-            )
-            result[str(field_value.value)] = fl
-            continue
-
-        if isinstance(field_value, list):
-            for item in field_value:
-                if isinstance(item, _ValueSpan):
-                    fl = _build_field_logprob(
-                        item,
-                        normalized.tokens,
-                        token_ranges,
-                        allowed_values=allowed_values_by_field.get(fname),
-                    )
-                    result[str(item.value)] = fl
-
-    return result
-
-
-def extract_path_entries(
-    response: Any,
-    *,
-    field: str | None = None,
     field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
 ) -> list[PathFieldLogprob]:
@@ -98,12 +44,9 @@ def extract_path_entries(
 
     token_ranges = build_token_char_ranges(normalized.tokens)
     allowed_values_by_path = classification_values_by_path(response_schema)
-    allowed_values_by_field = classification_values_by_field(response_schema)
 
     if field_path is not None:
         matches = _match_field_path(parsed, field_path)
-    elif field is not None:
-        matches = _match_top_level_field(parsed, field)
     elif response_schema is not None:
         detected_paths = detect_classification_paths(response_schema)
         if detected_paths:
@@ -111,32 +54,23 @@ def extract_path_entries(
             for detected_path in detected_paths:
                 matches.extend(_match_field_path(parsed, detected_path))
         else:
-            matches = _match_top_level_all(parsed)
+            matches = _match_all_atomic_values(parsed)
     else:
-        matches = _match_top_level_all(parsed)
+        matches = _match_all_atomic_values(parsed)
 
-    results: list[PathFieldLogprob] = []
-    for match in matches:
-        if field_path is not None or "[" in match.selector or "." in match.selector:
-            allowed_values = allowed_values_by_path.get(match.selector)
-        else:
-            allowed_values = allowed_values_by_field.get(match.selector)
-
-        field_logprob = _build_field_logprob(
-            match.span,
-            normalized.tokens,
-            token_ranges,
-            allowed_values=allowed_values,
+    return [
+        PathFieldLogprob(
+            path=match.path,
+            value=match.span.value,
+            field_logprob=_build_field_logprob(
+                match.span,
+                normalized.tokens,
+                token_ranges,
+                allowed_values=allowed_values_by_path.get(match.selector),
+            ),
         )
-        results.append(
-            PathFieldLogprob(
-                path=match.path,
-                value=match.span.value,
-                field_logprob=field_logprob,
-            )
-        )
-
-    return results
+        for match in matches
+    ]
 
 
 def _build_field_logprob(
@@ -178,48 +112,29 @@ def _extract_top_logprobs(
     )
 
 
-def _resolve_target_fields(
-    field: str | None,
-    response_schema: type | dict[str, Any] | None,
-    content: str,
-) -> list[str]:
-    if field is not None:
-        return [field]
-
-    if response_schema is not None:
-        detected = detect_classification_fields(response_schema)
-        if detected:
-            return detected
-
-    parsed = json.loads(content)
-    if isinstance(parsed, dict):
-        return list(parsed.keys())
-    return []
-
-
-def _match_top_level_all(parsed: dict[str, Any]) -> list[_SpanMatch]:
-    matches: list[_SpanMatch] = []
-    for field_name, field_value in parsed.items():
-        matches.extend(_match_top_level_value(field_name, field_value))
-    return matches
-
-
-def _match_top_level_field(parsed: dict[str, Any], field: str) -> list[_SpanMatch]:
-    if field not in parsed:
-        return []
-    return _match_top_level_value(field, parsed[field])
-
-
-def _match_top_level_value(field: str, value: Any) -> list[_SpanMatch]:
-    if isinstance(value, _ValueSpan):
-        return [_SpanMatch(selector=field, path=field, span=value)]
-
-    if isinstance(value, list):
+def _match_all_atomic_values(node: Any, *, current_path: str = "") -> list[_SpanMatch]:
+    if isinstance(node, _ValueSpan):
         return [
-            _SpanMatch(selector=field, path=f"{field}[{idx}]", span=item)
-            for idx, item in enumerate(value)
-            if isinstance(item, _ValueSpan)
+            _SpanMatch(
+                selector=current_path,
+                path=current_path,
+                span=node,
+            )
         ]
+
+    if isinstance(node, dict):
+        matches: list[_SpanMatch] = []
+        for key, value in node.items():
+            child_path = f"{current_path}.{key}" if current_path else key
+            matches.extend(_match_all_atomic_values(value, current_path=child_path))
+        return matches
+
+    if isinstance(node, list):
+        matches: list[_SpanMatch] = []
+        for idx, item in enumerate(node):
+            child_path = f"{current_path}[{idx}]"
+            matches.extend(_match_all_atomic_values(item, current_path=child_path))
+        return matches
 
     return []
 

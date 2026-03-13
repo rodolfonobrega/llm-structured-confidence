@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import litellm
 
-from llm_structured_confidence import extract_field_logprobs
+from llm_structured_confidence import extract_logprobs
 
 MODEL = os.environ.get("LLM_CONFIDENCE_TEST_MODEL", "gpt-4.1-mini")
 
@@ -102,12 +102,12 @@ def _call(text: str, *, response_format=None, system=None):
 
 def test_e2e_scalar():
     resp = _call("Morning yoga and meditation session")
-    result = extract_field_logprobs(resp, field="category")
+    result = extract_logprobs(resp, field_path="category")
 
     assert len(result) == 1
-    value = list(result.keys())[0]
-    assert value in CATEGORY_NAMES
-    fl = result[value]
+    entry = result[0]
+    assert entry.value in CATEGORY_NAMES
+    fl = entry.field_logprob
 
     assert 0.0 < fl.joint_probability <= 1.0
     assert fl.joint_logprob <= 0.0
@@ -122,7 +122,7 @@ def test_e2e_scalar():
     if fl.mean_nonzero_logprob is not None:
         assert fl.mean_nonzero_probability <= 1.0
 
-    print(f"\n  [{MODEL}] → {value} "
+    print(f"\n  [{MODEL}] → {entry.value} "
           f"(joint={fl.joint_probability:.2%}, "
           f"mean_nz={fl.mean_nonzero_probability or 'N/A'})")
     print(f"  tokens: {[t.token for t in fl.tokens]}")
@@ -136,12 +136,12 @@ def test_e2e_scalar():
 
 def test_e2e_pydantic_detection():
     resp = _call("Yoga and meditation retreat in the mountains")
-    result = extract_field_logprobs(resp, response_schema=SingleCategory)
+    result = extract_logprobs(resp, response_schema=SingleCategory)
     assert len(result) == 1
-    value = list(result.keys())[0]
-    assert value in CATEGORY_NAMES
-    print(f"\n  [pydantic auto-detect] → {value} "
-          f"(joint={result[value].joint_probability:.2%})")
+    entry = result[0]
+    assert entry.value in CATEGORY_NAMES
+    print(f"\n  [pydantic auto-detect] → {entry.value} "
+          f"(joint={entry.field_logprob.joint_probability:.2%})")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -161,12 +161,13 @@ def test_e2e_array():
         response_format=ARRAY_RESPONSE_FORMAT,
         system=SYSTEM_PROMPT + " Return a JSON array of categories.",
     )
-    result = extract_field_logprobs(resp, field="categories")
+    result = extract_logprobs(resp, field_path="categories[]")
 
     assert len(result) >= 2
-    for value, fl in result.items():
-        assert value in CATEGORY_NAMES
+    for entry in result:
+        fl = entry.field_logprob
+        assert entry.value in CATEGORY_NAMES
         assert 0.0 < fl.joint_probability <= 1.0
         assert len(fl.tokens) >= 1
-        print(f"\n  {value}: joint={fl.joint_probability:.2%}, "
+        print(f"\n  {entry.value}: joint={fl.joint_probability:.2%}, "
               f"mean_nz={fl.mean_nonzero_probability or 'N/A'}")

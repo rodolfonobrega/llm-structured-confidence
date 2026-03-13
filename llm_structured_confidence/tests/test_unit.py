@@ -12,17 +12,14 @@ import pytest
 from pydantic import BaseModel
 
 from llm_structured_confidence import (
-    extract_field_logprobs,
-    extract_path_logprobs,
+    extract_logprobs,
     FieldLogprob,
     PathFieldLogprob,
     TokenInfo,
     TopAlternative,
 )
 from llm_structured_confidence._classification import (
-    classification_values_by_field,
     classification_values_by_path,
-    detect_classification_fields,
     detect_classification_paths,
     normalize_response_schema,
 )
@@ -128,6 +125,19 @@ NESTED_CLASSIFICATION_JSON_SCHEMA = {
 }
 
 
+def _entries_by_path(entries: list[PathFieldLogprob]) -> dict[str, PathFieldLogprob]:
+    return {entry.path: entry for entry in entries}
+
+
+def _logprobs_by_value(entries: list[PathFieldLogprob]) -> dict[str, FieldLogprob]:
+    return {str(entry.value): entry.field_logprob for entry in entries}
+
+
+def _single_entry(entries: list[PathFieldLogprob]) -> PathFieldLogprob:
+    assert len(entries) == 1
+    return entries[0]
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 1. FieldLogprob.compute — metric calculations
 # ═══════════════════════════════════════════════════════════════════════
@@ -149,18 +159,18 @@ class TestResponseSchemaNormalization:
         schema = normalize_response_schema(STRUCTURED_OUTPUT_WRAPPER)
         assert schema == CLASSIFICATION_JSON_SCHEMA
 
-    def test_detect_fields_uses_normalized_schema_for_pydantic(self):
-        assert detect_classification_fields(SingleCategoryModel) == ["category"]
-        assert classification_values_by_field(SingleCategoryModel)["category"] == [
+    def test_detect_paths_cover_top_level_pydantic_fields(self):
+        assert detect_classification_paths(SingleCategoryModel) == ["category"]
+        assert classification_values_by_path(SingleCategoryModel)["category"] == [
             "health and wellness",
             "sports",
             "technology",
             "entertainment",
         ]
 
-    def test_detect_fields_uses_normalized_schema_for_json_schema(self):
-        assert detect_classification_fields(ARRAY_CLASSIFICATION_JSON_SCHEMA) == ["categories"]
-        assert classification_values_by_field(ARRAY_CLASSIFICATION_JSON_SCHEMA)["categories"] == [
+    def test_detect_paths_cover_top_level_json_schema_fields(self):
+        assert detect_classification_paths(ARRAY_CLASSIFICATION_JSON_SCHEMA) == ["categories[]"]
+        assert classification_values_by_path(ARRAY_CLASSIFICATION_JSON_SCHEMA)["categories[]"] == [
             "health and wellness",
             "sports",
             "technology",
@@ -425,47 +435,45 @@ class TestConverter:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3b. Batch dict — extract_field_logprobs end-to-end with Vertex dicts
+# 3b. Batch dict — extract_logprobs end-to-end with Vertex dicts
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestVertexBatchDict:
 
     def test_scalar_extraction(self, vertex_batch_scalar):
-        result = extract_field_logprobs(vertex_batch_scalar, field="category")
-        assert "health and wellness" in result
-        fl = result["health and wellness"]
+        entry = _single_entry(extract_logprobs(vertex_batch_scalar, field_path="category"))
+        fl = entry.field_logprob
+        assert entry.path == "category"
+        assert entry.value == "health and wellness"
         assert fl.value == "health and wellness"
         assert len(fl.tokens) == 3
 
     def test_scalar_matches_sdk(self, genai_scalar, vertex_batch_scalar):
-        result_sdk = extract_field_logprobs(genai_scalar, field="category")
-        result_dict = extract_field_logprobs(vertex_batch_scalar, field="category")
-        fl_sdk = result_sdk["health and wellness"]
-        fl_dict = result_dict["health and wellness"]
+        fl_sdk = _single_entry(extract_logprobs(genai_scalar, field_path="category")).field_logprob
+        fl_dict = _single_entry(extract_logprobs(vertex_batch_scalar, field_path="category")).field_logprob
         assert fl_sdk.joint_probability == pytest.approx(fl_dict.joint_probability)
         assert fl_sdk.mean_probability == pytest.approx(fl_dict.mean_probability)
         assert fl_sdk.mean_nonzero_probability == pytest.approx(fl_dict.mean_nonzero_probability)
 
     def test_array_extraction(self, vertex_batch_array):
-        result = extract_field_logprobs(vertex_batch_array, field="categories")
-        assert "health and wellness" in result
-        assert "sports" in result
+        result = extract_logprobs(vertex_batch_array, field_path="categories[]")
+        assert [entry.value for entry in result] == ["health and wellness", "sports"]
 
     def test_pydantic_model_detection(self, vertex_batch_scalar):
-        result = extract_field_logprobs(vertex_batch_scalar, response_schema=SingleCategoryModel)
-        assert "health and wellness" in result
+        result = extract_logprobs(vertex_batch_scalar, response_schema=SingleCategoryModel)
+        assert [entry.value for entry in result] == ["health and wellness"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. Integration — extract_field_logprobs end-to-end with mocks
+# 4. Integration — extract_logprobs end-to-end with mocks
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestExtractScalar:
 
     def test_gemini25_category(self, gemini25_scalar):
-        result = extract_field_logprobs(gemini25_scalar, field="category")
-        assert "health and wellness" in result
-        fl = result["health and wellness"]
+        entry = _single_entry(extract_logprobs(gemini25_scalar, field_path="category"))
+        fl = entry.field_logprob
+        assert entry.value == "health and wellness"
         assert fl.value == "health and wellness"
         assert len(fl.tokens) == 3
         assert fl.tokens[0].token == "health"
@@ -474,8 +482,7 @@ class TestExtractScalar:
 
     def test_gemini25_excludes_quotes_and_colon(self, gemini25_scalar):
         """The tokens '":' and ' "' must NOT appear in the result."""
-        result = extract_field_logprobs(gemini25_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini25_scalar, field_path="category")).field_logprob
         token_texts = [t.token for t in fl.tokens]
         assert '":'  not in token_texts
         assert ' "'  not in token_texts
@@ -484,29 +491,25 @@ class TestExtractScalar:
 
     def test_gemini3_excludes_merged_colon_token(self, gemini3_scalar):
         """Gemini 3 merges '":"' into one token — it must be excluded."""
-        result = extract_field_logprobs(gemini3_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, field_path="category")).field_logprob
         token_texts = [t.token for t in fl.tokens]
         assert '":"' not in token_texts
         assert fl.tokens[0].token == "health"
 
     def test_gemini3_metrics(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, field_path="category")).field_logprob
         assert fl.joint_logprob == pytest.approx(-0.168335)
         assert fl.joint_probability == pytest.approx(math.exp(-0.168335))
         assert fl.mean_logprob == pytest.approx(-0.168335 / 3)
         assert fl.mean_nonzero_logprob == pytest.approx(-0.168335)
 
     def test_gemini25_metrics(self, gemini25_scalar):
-        result = extract_field_logprobs(gemini25_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini25_scalar, field_path="category")).field_logprob
         assert fl.joint_logprob == pytest.approx(-0.012331)
         assert fl.mean_nonzero_logprob == pytest.approx(-0.012331)
 
     def test_top_logprobs_from_first_significant(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, field_path="category")).field_logprob
         assert len(fl.top_logprobs) == 3
         assert fl.top_logprobs[0].token == "health"
         assert fl.top_logprobs[1].token == "sport"
@@ -515,8 +518,7 @@ class TestExtractScalar:
 class TestResolvedTopAlternatives:
 
     def test_pydantic_schema_resolves_unique_prefixes(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)).field_logprob
         assert fl.top_logprobs[0].token == "health"
         assert fl.top_logprobs[0].resolved_value == "health and wellness"
         assert fl.top_logprobs[1].token == "sport"
@@ -525,12 +527,11 @@ class TestResolvedTopAlternatives:
         assert fl.top_logprobs[2].resolved_value == "technology"
 
     def test_without_schema_keeps_top_alternatives_unresolved(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, field="category")
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, field_path="category")).field_logprob
         assert [alt.resolved_value for alt in fl.top_logprobs] == [None, None, None]
 
     def test_array_resolves_each_element(self, array_response):
-        result = extract_field_logprobs(array_response, response_schema=MultipleCategoriesModel)
+        result = _logprobs_by_value(extract_logprobs(array_response, response_schema=MultipleCategoriesModel))
         bars = result["health and wellness"]
         sports = result["sports"]
         assert bars.top_logprobs[0].resolved_value == "health and wellness"
@@ -549,22 +550,19 @@ class TestResolvedTopAlternatives:
             ('"}', 0.0),
         ]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, response_schema=LiteralModel)
-        fl = result["happy"]
+        fl = _single_entry(extract_logprobs(resp, response_schema=LiteralModel)).field_logprob
         assert fl.top_logprobs[0].resolved_value == "happy"
         assert fl.top_logprobs[1].resolved_value == "sad"
         assert fl.top_logprobs[2].resolved_value == "neutral"
 
     def test_json_schema_resolves_unique_prefixes(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)).field_logprob
         assert fl.top_logprobs[0].resolved_value == "health and wellness"
         assert fl.top_logprobs[1].resolved_value == "sports"
         assert fl.top_logprobs[2].resolved_value == "technology"
 
     def test_structured_output_wrapper_resolves_unique_prefixes(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, response_schema=STRUCTURED_OUTPUT_WRAPPER)
-        fl = result["health and wellness"]
+        fl = _single_entry(extract_logprobs(gemini3_scalar, response_schema=STRUCTURED_OUTPUT_WRAPPER)).field_logprob
         assert fl.top_logprobs[0].resolved_value == "health and wellness"
 
     def test_ambiguous_prefix_stays_unresolved(self):
@@ -582,44 +580,43 @@ class TestResolvedTopAlternatives:
             ('"}', 0.0),
         ]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, response_schema=AmbiguousCategoryModel)
-        fl = result["Bar and Restaurants"]
+        fl = _single_entry(extract_logprobs(resp, response_schema=AmbiguousCategoryModel)).field_logprob
         assert fl.top_logprobs[0].resolved_value is None
 
 
 class TestExtractArray:
 
-    def test_array_returns_dict_by_value(self, array_response):
-        result = extract_field_logprobs(array_response, field="categories")
-        assert "health and wellness" in result
-        assert "sports" in result
+    def test_array_returns_entries_in_order(self, array_response):
+        result = extract_logprobs(array_response, field_path="categories[]")
+        assert [entry.path for entry in result] == ["categories[0]", "categories[1]"]
+        assert [entry.value for entry in result] == ["health and wellness", "sports"]
 
     def test_array_each_element_has_metrics(self, array_response):
-        result = extract_field_logprobs(array_response, field="categories")
-        bars = result["health and wellness"]
-        groc = result["sports"]
+        result = _entries_by_path(extract_logprobs(array_response, field_path="categories[]"))
+        bars = result["categories[0]"].field_logprob
+        groc = result["categories[1]"].field_logprob
         assert bars.joint_logprob == pytest.approx(-0.168)
         assert groc.joint_logprob == pytest.approx(-0.050)
 
     def test_array_element_tokens(self, array_response):
-        result = extract_field_logprobs(array_response, field="categories")
-        bars = result["health and wellness"]
+        bars = _entries_by_path(extract_logprobs(array_response, field_path="categories[]"))["categories[0]"].field_logprob
         assert bars.tokens[0].token == "health"
         assert bars.tokens[1].token == " and"
         assert bars.tokens[2].token == " wellness"
 
     def test_array_excludes_delimiters(self, array_response):
-        result = extract_field_logprobs(array_response, field="categories")
-        for fl in result.values():
+        result = extract_logprobs(array_response, field_path="categories[]")
+        for entry in result:
+            fl = entry.field_logprob
             token_texts = [t.token for t in fl.tokens]
             assert '":["' not in token_texts
             assert '","' not in token_texts
             assert '"]}' not in token_texts
 
     def test_array_top_logprobs_per_element(self, array_response):
-        result = extract_field_logprobs(array_response, field="categories")
-        bars = result["health and wellness"]
-        groc = result["sports"]
+        result = _entries_by_path(extract_logprobs(array_response, field_path="categories[]"))
+        bars = result["categories[0]"].field_logprob
+        groc = result["categories[1]"].field_logprob
         assert bars.top_logprobs[0].token == "health"
         assert groc.top_logprobs[0].token == "sport"
 
@@ -627,7 +624,7 @@ class TestExtractArray:
 class TestExtractPathLogprobs:
 
     def test_nested_object_array_path_returns_all_items(self, nested_classification_response):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             field_path="classifications[].name",
         )
@@ -639,7 +636,7 @@ class TestExtractPathLogprobs:
         assert [entry.value for entry in result] == ["Positive", "Negative", "Positive"]
 
     def test_nested_path_preserves_repeated_values(self, nested_classification_response):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             field_path="classifications[].name",
         )
@@ -652,7 +649,7 @@ class TestExtractPathLogprobs:
         self,
         nested_classification_response,
     ):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             field_path="classifications[].name",
             response_schema=NestedClassificationModel,
@@ -662,7 +659,7 @@ class TestExtractPathLogprobs:
         assert result[1].field_logprob.top_logprobs[0].resolved_value == "Negative"
 
     def test_response_schema_auto_detects_nested_paths(self, nested_classification_response):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             response_schema=NestedClassificationModel,
         )
@@ -673,7 +670,7 @@ class TestExtractPathLogprobs:
         ]
 
     def test_json_schema_auto_detects_nested_paths(self, nested_classification_response):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             response_schema=NESTED_CLASSIFICATION_JSON_SCHEMA,
         )
@@ -681,20 +678,20 @@ class TestExtractPathLogprobs:
 
     def test_array_without_brackets_raises_clear_error(self, nested_classification_response):
         with pytest.raises(ValueError, match="resolved to an array"):
-            extract_path_logprobs(
+            extract_logprobs(
                 nested_classification_response,
                 field_path="classifications.name",
             )
 
     def test_object_terminal_raises_clear_error(self, nested_classification_response):
         with pytest.raises(ValueError, match="resolved to an object"):
-            extract_path_logprobs(
+            extract_logprobs(
                 nested_classification_response,
                 field_path="classifications[]",
             )
 
     def test_missing_nested_path_returns_empty_list(self, nested_classification_response):
-        result = extract_path_logprobs(
+        result = extract_logprobs(
             nested_classification_response,
             field_path="classifications[].missing",
         )
@@ -718,7 +715,7 @@ class TestExtractPathLogprobs:
         ]
         resp = make_openai_response(content, tokens)
 
-        result = extract_path_logprobs(resp, field_path="classifications[]")
+        result = extract_logprobs(resp, field_path="classifications[]")
 
         assert [entry.path for entry in result] == [
             "classifications[0]",
@@ -736,39 +733,37 @@ class TestExtractPathLogprobs:
 
 class TestFieldSelection:
 
-    def test_explicit_field(self, multi_field_response):
-        result = extract_field_logprobs(multi_field_response, field="category")
-        assert "technology" in result
-        assert len(result) == 1
+    def test_explicit_field_path(self, multi_field_response):
+        result = extract_logprobs(multi_field_response, field_path="category")
+        assert [entry.path for entry in result] == ["category"]
+        assert [entry.value for entry in result] == ["technology"]
 
-    def test_no_field_returns_all(self, multi_field_response):
-        result = extract_field_logprobs(multi_field_response)
-        assert "technology" in result
-        assert "150" in result
-        assert len(result) == 2
+    def test_no_field_path_returns_all_atomic_values(self, multi_field_response):
+        result = extract_logprobs(multi_field_response)
+        assert [entry.path for entry in result] == ["category", "amount"]
+        assert [str(entry.value) for entry in result] == ["technology", "150"]
 
-    def test_nonexistent_field_returns_empty(self, multi_field_response):
-        result = extract_field_logprobs(multi_field_response, field="nonexistent")
-        assert result == {}
+    def test_nonexistent_field_path_returns_empty(self, multi_field_response):
+        result = extract_logprobs(multi_field_response, field_path="nonexistent")
+        assert result == []
 
 
 class TestPydanticDetection:
 
     def test_single_enum(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)
-        assert "health and wellness" in result
+        result = extract_logprobs(gemini3_scalar, response_schema=SingleCategoryModel)
+        assert [entry.value for entry in result] == ["health and wellness"]
 
     def test_list_enum(self, array_response):
-        result = extract_field_logprobs(array_response, response_schema=MultipleCategoriesModel)
-        assert "health and wellness" in result
-        assert "sports" in result
+        result = extract_logprobs(array_response, response_schema=MultipleCategoriesModel)
+        assert [entry.value for entry in result] == ["health and wellness", "sports"]
 
     def test_literal_field(self):
         content = '{"mood":"happy"}'
         tokens = [('{"', -0.01), ("mood", 0.0), ('":"', -0.10), ("happy", -0.05), ('"}', 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, response_schema=LiteralModel)
-        assert "happy" in result
+        result = extract_logprobs(resp, response_schema=LiteralModel)
+        assert [entry.value for entry in result] == ["happy"]
 
     def test_mixed_schema_only_enum(self):
         content = '{"category":"technology","confidence":0.9,"note":"test"}'
@@ -791,45 +786,40 @@ class TestPydanticDetection:
             ('"}', 0.0),
         ]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, response_schema=MixedModel)
-        assert "technology" in result
-        assert len(result) == 1
+        result = extract_logprobs(resp, response_schema=MixedModel)
+        assert [entry.path for entry in result] == ["category"]
+        assert [entry.value for entry in result] == ["technology"]
 
     def test_json_schema_detects_enum_field(self, gemini3_scalar):
-        result = extract_field_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)
-        assert "health and wellness" in result
+        result = extract_logprobs(gemini3_scalar, response_schema=CLASSIFICATION_JSON_SCHEMA)
+        assert [entry.value for entry in result] == ["health and wellness"]
 
     def test_json_schema_detects_array_enum_field(self, array_response):
-        result = extract_field_logprobs(array_response, response_schema=ARRAY_CLASSIFICATION_JSON_SCHEMA)
-        assert "health and wellness" in result
-        assert "sports" in result
+        result = extract_logprobs(array_response, response_schema=ARRAY_CLASSIFICATION_JSON_SCHEMA)
+        assert [entry.value for entry in result] == ["health and wellness", "sports"]
 
-    def test_field_overrides_response_schema(self, multi_field_response):
-        result = extract_field_logprobs(
+    def test_field_path_overrides_response_schema(self, multi_field_response):
+        result = extract_logprobs(
             multi_field_response,
-            field="amount",
+            field_path="amount",
             response_schema=SingleCategoryModel,
         )
-        assert "150" in result
-        assert "technology" not in result
+        assert [str(entry.value) for entry in result] == ["150"]
 
 
 class TestGoogleGenaiInput:
 
     def test_genai_scalar(self, genai_scalar):
-        result = extract_field_logprobs(genai_scalar, field="category")
-        assert "health and wellness" in result
-        fl = result["health and wellness"]
+        entry = _single_entry(extract_logprobs(genai_scalar, field_path="category"))
+        fl = entry.field_logprob
+        assert entry.value == "health and wellness"
         assert fl.tokens[0].token == "health"
         assert fl.joint_logprob == pytest.approx(-0.168335)
 
     def test_genai_metrics_match_openai(self, gemini3_scalar, genai_scalar):
         """Same token data via different providers must yield same metrics."""
-        r_oai = extract_field_logprobs(gemini3_scalar, field="category")
-        r_gen = extract_field_logprobs(genai_scalar, field="category")
-
-        fl_oai = r_oai["health and wellness"]
-        fl_gen = r_gen["health and wellness"]
+        fl_oai = _single_entry(extract_logprobs(gemini3_scalar, field_path="category")).field_logprob
+        fl_gen = _single_entry(extract_logprobs(genai_scalar, field_path="category")).field_logprob
 
         assert fl_oai.joint_logprob == pytest.approx(fl_gen.joint_logprob)
         assert fl_oai.mean_logprob == pytest.approx(fl_gen.mean_logprob)
@@ -838,9 +828,8 @@ class TestGoogleGenaiInput:
     def test_genai_array(self):
         from .conftest import make_genai_response, ARRAY_CONTENT, ARRAY_TOKENS
         resp = make_genai_response(ARRAY_CONTENT, ARRAY_TOKENS)
-        result = extract_field_logprobs(resp, field="categories")
-        assert "health and wellness" in result
-        assert "sports" in result
+        result = extract_logprobs(resp, field_path="categories[]")
+        assert [entry.value for entry in result] == ["health and wellness", "sports"]
 
 
 class TestEdgeCases:
@@ -849,9 +838,9 @@ class TestEdgeCases:
         content = '{"k":"v"}'
         tokens = [('{"', -0.01), ("k", 0.0), ('":"', -0.10), ("v", -0.05), ('"}', 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, field="k")
-        assert "v" in result
-        fl = result["v"]
+        entry = _single_entry(extract_logprobs(resp, field_path="k"))
+        fl = entry.field_logprob
+        assert entry.value == "v"
         assert len(fl.tokens) == 1
         assert fl.tokens[0].token == "v"
 
@@ -859,9 +848,9 @@ class TestEdgeCases:
         content = '{"k":""}'
         tokens = [('{"', -0.01), ("k", 0.0), ('":"', -0.10), ('"}', 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, field="k")
-        assert "" in result
-        fl = result[""]
+        entry = _single_entry(extract_logprobs(resp, field_path="k"))
+        fl = entry.field_logprob
+        assert entry.value == ""
         assert len(fl.tokens) == 0
         assert fl.joint_probability == 1.0
 
@@ -869,26 +858,23 @@ class TestEdgeCases:
         content = '{"flag":true}'
         tokens = [('{"', -0.01), ("flag", 0.0), ('":', -0.01), ("true", -0.02), ("}", 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, field="flag")
-        assert "True" in result
-        assert result["True"].value is True
-        assert result["True"].joint_logprob == pytest.approx(-0.02)
+        fl = _single_entry(extract_logprobs(resp, field_path="flag")).field_logprob
+        assert fl.value is True
+        assert fl.joint_logprob == pytest.approx(-0.02)
 
     def test_number_value(self):
         content = '{"count":42}'
         tokens = [('{"', -0.01), ("count", 0.0), ('":', -0.01), ("42", -0.05), ("}", 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, field="count")
-        assert "42" in result
-        assert result["42"].value == 42
+        entry = _single_entry(extract_logprobs(resp, field_path="count"))
+        assert entry.value == 42
 
     def test_null_value(self):
         content = '{"x":null}'
         tokens = [('{"', -0.01), ("x", 0.0), ('":', -0.01), ("null", -0.03), ("}", 0.0)]
         resp = make_openai_response(content, tokens)
-        result = extract_field_logprobs(resp, field="x")
-        assert "None" in result
-        assert result["None"].value is None
+        entry = _single_entry(extract_logprobs(resp, field_path="x"))
+        assert entry.value is None
 
     def test_probability_property(self):
         ti = TokenInfo(token="test", logprob=-0.5, char_start=0, char_end=4)
@@ -918,15 +904,16 @@ class TestExtractConfidence:
 
     def test_returns_flat_dict(self, vertex_batch_scalar):
         from llm_structured_confidence import extract_confidence
-        result = extract_confidence(vertex_batch_scalar, field="category")
+        result = extract_confidence(vertex_batch_scalar, field_path="category")
         assert result["value"] == "health and wellness"
+        assert result["path"] == "category"
         assert result["error"] is None
         assert isinstance(result["mean_nonzero_probability"], float)
         assert isinstance(result["joint_probability"], float)
 
     def test_top_alternative(self, vertex_batch_scalar):
         from llm_structured_confidence import extract_confidence
-        result = extract_confidence(vertex_batch_scalar, field="category")
+        result = extract_confidence(vertex_batch_scalar, field_path="category")
         assert result["top_alternative"] == "sport"
         assert result["top_alternative_resolved"] is None
         assert isinstance(result["top_alternative_probability"], float)
@@ -935,7 +922,7 @@ class TestExtractConfidence:
         from llm_structured_confidence import extract_confidence
         result = extract_confidence(
             vertex_batch_scalar,
-            field="category",
+            field_path="category",
             response_schema=SingleCategoryModel,
         )
         assert result["top_alternative"] == "sport"
@@ -951,20 +938,20 @@ class TestExtractConfidence:
         from llm_structured_confidence import extract_confidence
         result = extract_confidence(
             vertex_batch_scalar,
-            field="category",
+            field_path="category",
             response_schema=CLASSIFICATION_JSON_SCHEMA,
         )
         assert result["top_alternative_resolved"] == "sports"
 
     def test_error_on_bad_input(self):
         from llm_structured_confidence import extract_confidence
-        result = extract_confidence({"garbage": True}, field="category")
+        result = extract_confidence({"garbage": True}, field_path="category")
         assert result["value"] is None
         assert result["error"] is not None
 
-    def test_error_on_missing_field(self, vertex_batch_scalar):
+    def test_error_on_missing_field_path(self, vertex_batch_scalar):
         from llm_structured_confidence import extract_confidence
-        result = extract_confidence(vertex_batch_scalar, field="nonexistent")
+        result = extract_confidence(vertex_batch_scalar, field_path="nonexistent")
         assert result["value"] is None
         assert result["error"] == "no values found"
 
@@ -990,9 +977,10 @@ class TestAddConfidenceColumns:
             {"id": "req-1", "response": vertex_batch_scalar},
             {"id": "req-2", "response": vertex_batch_scalar},
         ])
-        result = add_confidence_columns(df, response_column="response", field="category")
+        result = add_confidence_columns(df, response_column="response", field_path="category")
 
         assert "confidence_value" in result.columns
+        assert "confidence_path" in result.columns
         assert "confidence_prob" in result.columns
         assert "confidence_joint_prob" in result.columns
         assert "confidence_top_alt" in result.columns
@@ -1000,6 +988,7 @@ class TestAddConfidenceColumns:
         assert "confidence_top_alt_prob" in result.columns
         assert "confidence_error" in result.columns
         assert list(result["confidence_value"]) == ["health and wellness", "health and wellness"]
+        assert list(result["confidence_path"]) == ["category", "category"]
         assert result["confidence_top_alt_resolved"].isna().all()
         assert all(result["confidence_error"].isna())
 
@@ -1008,8 +997,9 @@ class TestAddConfidenceColumns:
         from llm_structured_confidence import add_confidence_columns
 
         df = pd.DataFrame([{"response": vertex_batch_scalar}])
-        result = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
+        result = add_confidence_columns(df, response_column="response", field_path="category", prefix="conf")
         assert "conf_value" in result.columns
+        assert "conf_path" in result.columns
         assert "conf_prob" in result.columns
 
     def test_response_schema_populates_resolved_top_alt_column(self, vertex_batch_scalar):
@@ -1020,7 +1010,7 @@ class TestAddConfidenceColumns:
         result = add_confidence_columns(
             df,
             response_column="response",
-            field="category",
+            field_path="category",
             response_schema=SingleCategoryModel,
         )
         assert list(result["confidence_top_alt_resolved"]) == ["sports"]
@@ -1031,7 +1021,7 @@ class TestAddConfidenceColumns:
 
         df = pd.DataFrame([{"response": vertex_batch_scalar}])
         original_cols = list(df.columns)
-        add_confidence_columns(df, response_column="response", field="category")
+        add_confidence_columns(df, response_column="response", field_path="category")
         assert list(df.columns) == original_cols
 
     def test_field_path_adds_resolved_path_column(self, nested_vertex_batch_response):
