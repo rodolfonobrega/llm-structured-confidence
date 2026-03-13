@@ -129,6 +129,8 @@ def _json_schema_values_by_path(
     values: dict[str, list[Any]] = {}
 
     schema_type = response_schema.get("type")
+    if isinstance(schema_type, str):
+        schema_type = schema_type.lower()
     if schema_type == "object":
         properties = response_schema.get("properties")
         if not isinstance(properties, dict):
@@ -185,7 +187,10 @@ def _json_schema_choices(property_schema: dict[str, Any]) -> list[Any]:
     if "const" in property_schema:
         return [property_schema["const"]]
 
-    if property_schema.get("type") == "array":
+    schema_type = property_schema.get("type")
+    if isinstance(schema_type, str):
+        schema_type = schema_type.lower()
+    if schema_type == "array":
         items = property_schema.get("items")
         if isinstance(items, dict):
             return _json_schema_choices(items)

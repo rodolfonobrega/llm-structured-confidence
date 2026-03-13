@@ -2,6 +2,9 @@
 
 All notable changes to this project are recorded in this file.
 
+## [0.4.2]
+- Fixed: Added defense-in-depth for case-insensitive JSON Schema `type` matching. The comparison functions now normalize type values to lowercase before comparing, ensuring schemas from providers that use uppercase types (e.g., GenAI with `"type": "OBJECT"`) work correctly.
+
 ## [0.4.1]
 - Fixed: JSON Schema `type` field is now normalized to lowercase for case-insensitive matching. Schemas with uppercase types like `"type": "OBJECT"` now work correctly.
 
