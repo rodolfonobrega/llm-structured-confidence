@@ -145,7 +145,9 @@ scores = extract_field_logprobs(batch_row["response"], field="category")
 
 ### Pydantic auto-detection
 
-Pass the Pydantic model you used for structured output — the library finds `Enum`, `list[Enum]`, and `Literal` fields automatically.
+Pass `response_schema=` with either the Pydantic model or the JSON Schema you used for structured output. The library finds enum-valued fields automatically.
+
+Internally, both inputs are normalized to JSON Schema before field detection and enum resolution.
 
 ```python
 from enum import Enum
@@ -158,7 +160,25 @@ class CategoryEnum(str, Enum):
 class Classification(BaseModel):
     category: CategoryEnum
 
-result = extract_field_logprobs(response, model=Classification)
+result = extract_field_logprobs(response, response_schema=Classification)
+```
+
+### JSON Schema auto-detection
+
+```python
+schema = {
+    "type": "object",
+    "properties": {
+        "category": {
+            "type": "string",
+            "enum": ["sports", "health and wellness", "technology"],
+        }
+    },
+    "required": ["category"],
+    "additionalProperties": False,
+}
+
+result = extract_field_logprobs(response, response_schema=schema)
 ```
 
 ### google-genai native support
@@ -197,6 +217,10 @@ df["body"] = df["response"].apply(lambda r: r["body"])
 df = add_confidence_columns(df, response_column="body", field="category")
 ```
 
+When `response_schema=` is provided, `add_confidence_columns()` also adds `{prefix}_top_alt_resolved` with the full enum/literal value for the best alternative when the first token uniquely identifies it.
+
+The same resolution is available in `extract_confidence(...)` via the `top_alternative_resolved` key.
+
 ### Token inspection
 
 ```python
@@ -218,6 +242,21 @@ for alt in fl.top_logprobs:
 # 'tech'               prob=15.47%    ← "technology"
 # 'sport'              prob=0.01%     ← "sports"
 ```
+
+If you also pass `response_schema=...`, each alternative preserves the raw token and exposes the resolved full value when the token is enough to identify a unique enum/literal choice.
+
+```python
+result = extract_field_logprobs(response, response_schema=Classification)
+fl = result["health and wellness"]
+
+for alt in fl.top_logprobs:
+    print(alt.token, "->", alt.resolved_value)
+# health -> health and wellness
+# tech -> technology
+# sport -> sports
+```
+
+If a token prefix is ambiguous across allowed values, `resolved_value` stays `None`.
 
 ## Understanding the Metrics
 
@@ -255,17 +294,17 @@ Longer names get more dilution. `mean_nonzero` fixes this by averaging only toke
 
 ## API Reference
 
-### `extract_field_logprobs(response, *, field=None, model=None)`
+### `extract_field_logprobs(response, *, field=None, response_schema=None)`
 
 | Parameter  | Type | Description |
 |------------|------|-------------|
 | `response` | `Any` | `litellm.ModelResponse`, `openai.ChatCompletion`, or `google.genai.GenerateContentResponse` with logprobs |
-| `field` | `str \| None` | JSON field name (e.g. `"category"`). Takes precedence over `model`. |
-| `model` | `type \| None` | Pydantic model — auto-detects `Enum`/`list[Enum]`/`Literal` fields |
+| `field` | `str \| None` | JSON field name (e.g. `"category"`). Takes precedence over `response_schema`. |
+| `response_schema` | `type \| dict[str, Any] \| None` | Pydantic model or JSON Schema — auto-detects enum-valued fields |
 
 **Returns** `dict[str, FieldLogprob]` — maps each value (as string) to its metrics.
 
-**Precedence**: `field` > `model` > all top-level fields.
+**Precedence**: `field` > `response_schema` > all top-level fields.
 
 ### `FieldLogprob`
 
@@ -296,6 +335,7 @@ Longer names get more dilution. `mean_nonzero` fixes this by averaging only toke
 |-----------|------|-------------|
 | `token` | `str` | Alternative token text |
 | `logprob` | `float` | Its log-probability |
+| `resolved_value` | `Any \| None` | Full enum/literal value when `response_schema=` provides choices and the token prefix matches exactly one |
 | `probability` | `float` | `exp(logprob)` — property |
 
 ## How It Works

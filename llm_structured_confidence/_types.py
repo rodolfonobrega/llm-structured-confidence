@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -27,6 +27,7 @@ class TopAlternative:
 
     token: str
     logprob: float
+    resolved_value: Any | None = None
 
     @property
     def probability(self) -> float:
