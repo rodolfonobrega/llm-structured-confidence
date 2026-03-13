@@ -2,6 +2,12 @@
 
 All notable changes to this project are recorded in this file.
 
+## [0.4.3]
+- Added support for top-level JSON arrays (Vertex AI format). Responses can now be arrays at the root level, not just objects.
+- Added `field_path="[]"` for accessing elements of top-level string arrays (e.g., `["cat_a", "cat_b"]`).
+- Added `field_path="[].field"` for accessing fields within top-level object arrays (e.g., `[{"category": "..."}]`).
+- Updated documentation with path syntax table and top-level array examples.
+
 ## [0.4.2]
 - Fixed: Added defense-in-depth for case-insensitive JSON Schema `type` matching. The comparison functions now normalize type values to lowercase before comparing, ensuring schemas from providers that use uppercase types (e.g., GenAI with `"type": "OBJECT"`) work correctly.
 
