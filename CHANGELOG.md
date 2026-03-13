@@ -2,6 +2,9 @@
 
 All notable changes to this project are recorded in this file.
 
+## [0.4.4]
+- Fixed: Top-level array detection now works correctly. The `[]` path pattern is now properly detected for schemas with `type: "array"` at the root level.
+
 ## [0.4.3]
 - Added support for top-level JSON arrays (Vertex AI format). Responses can now be arrays at the root level, not just objects.
 - Added `field_path="[]"` for accessing elements of top-level string arrays (e.g., `["cat_a", "cat_b"]`).
