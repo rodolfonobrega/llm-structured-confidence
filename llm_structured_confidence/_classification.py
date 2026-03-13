@@ -145,10 +145,10 @@ def _json_schema_values_by_path(
 
     if schema_type == "array":
         items = response_schema.get("items")
-        if not isinstance(items, dict) or not prefix:
+        if not isinstance(items, dict):
             return values
 
-        item_path = f"{prefix}[]"
+        item_path = "[]" if not prefix else f"{prefix}[]"
         choices = _json_schema_choices(items)
         if choices:
             values[item_path] = choices
@@ -163,6 +163,10 @@ def _json_schema_values_by_path(
 
 def _unwrap_json_schema(response_schema: dict[str, Any]) -> dict[str, Any] | None:
     if "properties" in response_schema:
+        return response_schema
+
+    schema_type = response_schema.get("type", "")
+    if isinstance(schema_type, str) and schema_type.lower() == "array" and "items" in response_schema:
         return response_schema
 
     json_schema = response_schema.get("json_schema")
