@@ -4,7 +4,7 @@ Extract per-field confidence scores from LLM structured JSON outputs using token
 
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python->=3.10-3776ab?style=flat-square)](https://www.python.org)
-[![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square&cacheSeconds=300)](https://pypi.org/project/llm-structured-confidence/)
+[![PyPI](https://img.shields.io/pypi/v/llm-structured-confidence?style=flat-square&cacheSeconds=60)](https://pypi.org/project/llm-structured-confidence/)
 
 [The Problem](#the-problem) • [Installation](#installation) • [Quick Start](#quick-start) • [Features](#features) • [API Reference](#api-reference) • [Supported Providers](#supported-providers)
 
@@ -99,6 +99,41 @@ result = extract_field_logprobs(response, field="category")
 for value, fl in result.items():
     print(f"{value}: {fl.mean_nonzero_probability:.2%}")  # health and wellness: 84.51%
 ```
+
+## How to Use It
+
+You do **not** need to read the source code to use this library. There are three main ways to call it:
+
+### 1. Explicit field name
+
+Use this when you already know the JSON key you want to analyze.
+
+```python
+result = extract_field_logprobs(response, field="category")
+value, fl = next(iter(result.items()))
+```
+
+### 2. `response_schema` with Pydantic
+
+Use this when your structured output already comes from a Pydantic model.
+
+```python
+result = extract_field_logprobs(response, response_schema=Classification)
+```
+
+### 3. `response_schema` with JSON Schema
+
+Use this when your structured output is defined with a raw schema dict.
+
+```python
+result = extract_field_logprobs(response, response_schema=schema)
+```
+
+`response_schema=` accepts both:
+- a Pydantic model class
+- a JSON Schema dict
+
+Internally, both are normalized to JSON Schema before field detection and enum resolution.
 
 ## Features
 
@@ -305,6 +340,34 @@ Longer names get more dilution. `mean_nonzero` fixes this by averaging only toke
 **Returns** `dict[str, FieldLogprob]` — maps each value (as string) to its metrics.
 
 **Precedence**: `field` > `response_schema` > all top-level fields.
+
+### `extract_confidence(response, *, field=None, response_schema=None)`
+
+Returns a flat `dict[str, Any]` for the first extracted value. This is the easiest option when you want to store one result per response in a database, log, or DataFrame-ready record.
+
+Main keys:
+- `value`
+- `joint_probability`
+- `mean_probability`
+- `mean_nonzero_probability`
+- `top_alternative`
+- `top_alternative_resolved`
+- `top_alternative_probability`
+- `top_logprobs`
+- `error`
+
+### `add_confidence_columns(df, *, response_column="response", field=None, response_schema=None, prefix="confidence")`
+
+Adds confidence columns to a pandas DataFrame of batch results.
+
+Main added columns:
+- `{prefix}_value`
+- `{prefix}_prob`
+- `{prefix}_joint_prob`
+- `{prefix}_top_alt`
+- `{prefix}_top_alt_resolved`
+- `{prefix}_top_alt_prob`
+- `{prefix}_error`
 
 ### `FieldLogprob`
 
