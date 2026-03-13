@@ -44,11 +44,13 @@ Internally, `response_schema` is normalized to plain JSON Schema before path det
 ## Path Syntax
 
 ```python
-"category"
-"categories[]"
-"classification.name"
-"classifications[].name"
-"groups[].items[].label"
+"category"                   # scalar field
+"classification.name"        # nested scalar
+"categories[]"               # array of strings
+"classifications[].name"     # field in array of objects
+"[]"                         # top-level array of strings (Vertex AI only)
+"[].category"                # top-level array of objects (Vertex AI only)
+"groups[].items[].label"     # deeply nested arrays
 ```
 
 ## PathFieldLogprob attributes

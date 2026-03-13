@@ -37,9 +37,9 @@ def extract_logprob_entries(
     """Extract path-aware logprobs for atomic values, preserving item order."""
     normalized = normalize_response(response)
     parsed = parse_json_spans(normalized.content)
-    if not isinstance(parsed, dict):
+    if not isinstance(parsed, (dict, list)):
         raise ValueError(
-            f"Expected JSON object at top level, got {type(parsed).__name__}"
+            f"Expected JSON object or array at top level, got {type(parsed).__name__}"
         )
 
     token_ranges = build_token_char_ranges(normalized.tokens)
@@ -139,7 +139,7 @@ def _match_all_atomic_values(node: Any, *, current_path: str = "") -> list[_Span
     return []
 
 
-def _match_field_path(parsed: dict[str, Any], field_path: str) -> list[_SpanMatch]:
+def _match_field_path(parsed: dict[str, Any] | list[Any], field_path: str) -> list[_SpanMatch]:
     segments = _parse_field_path(field_path)
     states: list[tuple[str, Any]] = [("", parsed)]
 
@@ -147,6 +147,16 @@ def _match_field_path(parsed: dict[str, Any], field_path: str) -> list[_SpanMatc
         next_states: list[tuple[str, Any]] = []
         for current_path, node in states:
             location = current_path or "<root>"
+
+            if key == "" and is_array:
+                if not isinstance(node, list):
+                    raise ValueError(
+                        f"field_path {field_path!r} expected a top-level array"
+                    )
+                for idx, item in enumerate(node):
+                    next_states.append((f"[{idx}]", item))
+                continue
+
             if isinstance(node, list):
                 raise ValueError(
                     f"field_path {field_path!r} resolved to an array at {location!r}; "
@@ -203,12 +213,19 @@ def _parse_field_path(field_path: str) -> list[tuple[str, bool]]:
         raise ValueError("field_path must not be empty")
 
     segments: list[tuple[str, bool]] = []
-    for raw_segment in field_path.split("."):
+    raw_segments = field_path.split(".")
+
+    for i, raw_segment in enumerate(raw_segments):
         if not raw_segment:
             raise ValueError(f"Invalid field_path {field_path!r}")
 
         is_array = raw_segment.endswith("[]")
         key = raw_segment[:-2] if is_array else raw_segment
+
+        if i == 0 and key == "" and is_array:
+            segments.append(("", True))
+            continue
+
         if not key or "[" in key or "]" in key:
             raise ValueError(f"Invalid field_path segment {raw_segment!r}")
         segments.append((key, is_array))

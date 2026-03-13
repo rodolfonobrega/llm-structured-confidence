@@ -73,20 +73,24 @@ Use:
 
 - `.` for object traversal
 - `[]` for arrays
+- `[]` at the start for top-level arrays (Vertex AI only)
 
-Examples:
-
-- `category`
-- `categories[]`
-- `classification.name`
-- `classifications[].name`
-- `groups[].items[].label`
+| Pattern | Meaning | Example JSON |
+|---|---|---|
+| `category` | Scalar field at root | `{"category": "..."}` |
+| `classification.name` | Nested scalar field | `{"classification": {"name": "..."}}` |
+| `categories[]` | Each element in an array | `{"categories": ["a", "b"]}` |
+| `results[].category` | Field inside each array element | `{"results": [{"category": "..."}]}` |
+| `[]` | Each element of a top-level string array | `["cat_a", "cat_b"]` |
+| `[].category` | Field in each element of a top-level array | `[{"category": "..."}]` |
+| `groups[].items[].label` | Deeply nested: array inside array | `{"groups": [{"items": [{"label": "..."}]}]}` |
 
 ## Examples
 
 ### Scalar field
 
 ```python
+# {"category": "health and wellness"}
 entries = extract_logprobs(response, field_path="category")
 entry = entries[0]
 
@@ -118,6 +122,36 @@ entries = extract_logprobs(response, field_path="classifications[].name")
 
 for entry in entries:
     print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+```
+
+### Top-level array of objects (Vertex AI only)
+
+Vertex AI supports `"type": "ARRAY"` at the schema root. OpenAI requires a top-level object.
+
+```python
+# [{"id": 1, "category": "deposits"}, {"id": 2, "category": "shopping"}]
+entries = extract_logprobs(response, field_path="[].category")
+
+for entry in entries:
+    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+# [0].category deposits 0.998
+# [1].category shopping 0.995
+```
+
+### Top-level array of strings (Vertex AI only)
+
+The most compact multi-classification format. Use `field_path="[]"` to select each string element.
+The `enum` constraint in the Vertex AI schema is enforced — every value is guaranteed to be one of the allowed options.
+
+```python
+# ["bars and restaurants", "transportation", "digital services"]
+entries = extract_logprobs(response, field_path="[]")
+
+for entry in entries:
+    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+# [0] bars and restaurants 0.714
+# [1] transportation 0.999
+# [2] digital services 0.999
 ```
 
 ### Pydantic schema auto-detection
