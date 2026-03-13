@@ -17,6 +17,16 @@ def detect_classification_fields(response_schema: type | dict[str, Any] | None) 
     return list(_json_schema_values_by_field(normalized).keys())
 
 
+def detect_classification_paths(
+    response_schema: type | dict[str, Any] | None,
+) -> list[str]:
+    """Inspect a response schema for enum/literal paths at any depth."""
+    normalized = normalize_response_schema(response_schema)
+    if not normalized:
+        return []
+    return list(_json_schema_values_by_path(normalized).keys())
+
+
 def classification_values_by_field(
     response_schema: type | dict[str, Any] | None,
 ) -> dict[str, list[Any]]:
@@ -25,6 +35,16 @@ def classification_values_by_field(
     if not normalized:
         return {}
     return _json_schema_values_by_field(normalized)
+
+
+def classification_values_by_path(
+    response_schema: type | dict[str, Any] | None,
+) -> dict[str, list[Any]]:
+    """Return allowed classification values for each detectable schema path."""
+    normalized = normalize_response_schema(response_schema)
+    if not normalized:
+        return {}
+    return _json_schema_values_by_path(normalized)
 
 
 def normalize_response_schema(
@@ -111,6 +131,44 @@ def _json_schema_values_by_field(response_schema: dict[str, Any]) -> dict[str, l
         choices = _json_schema_choices(property_schema)
         if choices:
             values[name] = choices
+    return values
+
+
+def _json_schema_values_by_path(
+    response_schema: dict[str, Any],
+    *,
+    prefix: str = "",
+) -> dict[str, list[Any]]:
+    values: dict[str, list[Any]] = {}
+
+    schema_type = response_schema.get("type")
+    if schema_type == "object":
+        properties = response_schema.get("properties")
+        if not isinstance(properties, dict):
+            return values
+
+        for name, property_schema in properties.items():
+            if not isinstance(property_schema, dict):
+                continue
+            child_prefix = f"{prefix}.{name}" if prefix else name
+            values.update(_json_schema_values_by_path(property_schema, prefix=child_prefix))
+        return values
+
+    if schema_type == "array":
+        items = response_schema.get("items")
+        if not isinstance(items, dict) or not prefix:
+            return values
+
+        item_path = f"{prefix}[]"
+        choices = _json_schema_choices(items)
+        if choices:
+            values[item_path] = choices
+        values.update(_json_schema_values_by_path(items, prefix=item_path))
+        return values
+
+    choices = _json_schema_choices(response_schema)
+    if choices and prefix:
+        values[prefix] = choices
     return values
 
 

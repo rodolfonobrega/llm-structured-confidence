@@ -129,6 +129,22 @@ class MixedModel(BaseModel):
     note: str
 
 
+class NamedClassificationEnum(str, Enum):
+    positive = "Positive"
+    negative = "Negative"
+    neutral = "Neutral"
+
+
+class ClassificationItemModel(BaseModel):
+    id: int
+    name: NamedClassificationEnum
+    color: str
+
+
+class NestedClassificationModel(BaseModel):
+    classifications: list[ClassificationItemModel]
+
+
 # ── standard token fixtures ──────────────────────────────────────────
 
 # Gemini 2.5-style: tokens nicely separated, space before opening quote
@@ -186,6 +202,59 @@ MULTI_FIELD_TOKENS = [
     ("}", -0.000),
 ]
 
+NESTED_CLASSIFICATION_CONTENT = (
+    '{"classifications":['
+    '{"id":0,"name":"Positive","color":"#00FF00"},'
+    '{"id":1,"name":"Negative","color":"#FF0000"},'
+    '{"id":2,"name":"Positive","color":"#0000AA"}'
+    ']}'
+)
+
+NESTED_CLASSIFICATION_TOKENS = [
+    ('{"', -0.01),
+    ("classifications", 0.0),
+    ('":[{"', -0.02),
+    ("id", 0.0),
+    ('":', -0.01),
+    ("0", -0.001),
+    (',"', -0.01),
+    ("name", 0.0),
+    ('":"', -0.05),
+    ("Pos", -0.04, [("Pos", -0.04), ("Neg", -1.5), ("Neu", -2.0)]),
+    ("itive", 0.0),
+    ('","', -0.01),
+    ("color", 0.0),
+    ('":"', -0.01),
+    ("#00FF00", -0.001),
+    ('"},{"', -0.01),
+    ("id", 0.0),
+    ('":', -0.01),
+    ("1", -0.001),
+    (',"', -0.01),
+    ("name", 0.0),
+    ('":"', -0.05),
+    ("Neg", -0.06, [("Neg", -0.06), ("Pos", -1.2), ("Neu", -1.8)]),
+    ("ative", 0.0),
+    ('","', -0.01),
+    ("color", 0.0),
+    ('":"', -0.01),
+    ("#FF0000", -0.001),
+    ('"},{"', -0.01),
+    ("id", 0.0),
+    ('":', -0.01),
+    ("2", -0.001),
+    (',"', -0.01),
+    ("name", 0.0),
+    ('":"', -0.05),
+    ("Pos", -0.03, [("Pos", -0.03), ("Neg", -1.4), ("Neu", -2.1)]),
+    ("itive", 0.0),
+    ('","', -0.01),
+    ("color", 0.0),
+    ('":"', -0.01),
+    ("#0000AA", -0.001),
+    ('"}]}', 0.0),
+]
+
 
 @pytest.fixture
 def gemini25_scalar():
@@ -220,3 +289,19 @@ def vertex_batch_scalar():
 @pytest.fixture
 def vertex_batch_array():
     return make_vertex_batch_dict(ARRAY_CONTENT, ARRAY_TOKENS)
+
+
+@pytest.fixture
+def nested_classification_response():
+    return make_openai_response(
+        NESTED_CLASSIFICATION_CONTENT,
+        NESTED_CLASSIFICATION_TOKENS,
+    )
+
+
+@pytest.fixture
+def nested_vertex_batch_response():
+    return make_vertex_batch_dict(
+        NESTED_CLASSIFICATION_CONTENT,
+        NESTED_CLASSIFICATION_TOKENS,
+    )

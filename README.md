@@ -51,7 +51,7 @@ pip install "llm-structured-confidence[pandas]"
 Import path:
 
 ```python
-from llm_structured_confidence import extract_field_logprobs
+from llm_structured_confidence import extract_field_logprobs, extract_path_logprobs
 ```
 
 Or from source:
@@ -130,6 +130,36 @@ result = extract_field_logprobs(response, response_schema=schema)
 result = extract_field_logprobs(response, field="categories")
 ```
 
+Simple arrays of atomic values are also supported directly:
+
+```python
+# {"classifications": ["Positive", "Negative", "Neutral"]}
+result = extract_field_logprobs(response, field="classifications")
+
+for value, fl in result.items():
+    print(value, fl.mean_nonzero_probability)
+```
+
+If you need item positions, use the path-aware API:
+
+```python
+results = extract_path_logprobs(response, field_path="classifications[]")
+print(results[0].path)   # classifications[0]
+print(results[0].value)  # Positive
+```
+
+### Nested arrays of objects
+
+Use the path-aware API when values live inside arrays or nested objects.
+
+```python
+results = extract_path_logprobs(response, field_path="classifications[].name")
+
+for entry in results:
+    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+    # classifications[0].name Positive 0.96
+```
+
 ### Raw batch payloads are supported
 
 Raw OpenAI / Vertex AI batch payloads are supported directly.
@@ -186,9 +216,11 @@ Detailed docs live here:
 The public API covered in the guide:
 
 - `extract_field_logprobs(...)`
+- `extract_path_logprobs(...)`
 - `extract_confidence(...)`
 - `add_confidence_columns(...)`
 - `FieldLogprob`
+- `PathFieldLogprob`
 - `TokenInfo`
 - `TopAlternative`
 

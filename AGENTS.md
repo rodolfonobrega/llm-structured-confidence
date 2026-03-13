@@ -5,7 +5,14 @@ Extract per-field confidence from LLM structured JSON responses with logprobs.
 ## Import
 
 ```python
-from llm_structured_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
+from llm_structured_confidence import (
+    extract_field_logprobs,
+    extract_path_logprobs,
+    FieldLogprob,
+    PathFieldLogprob,
+    TokenInfo,
+    TopAlternative,
+)
 ```
 
 ## Function
@@ -17,6 +24,13 @@ def extract_field_logprobs(
     field: str | None,       # JSON field name, e.g. "category"
     response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema — auto-detects enum-valued fields
 ) -> dict[str, FieldLogprob]
+
+def extract_path_logprobs(
+    response: Any,
+    *,
+    field_path: str | None,  # Nested atomic path, e.g. "classifications[].name"
+    response_schema: type | dict[str, Any] | None,  # Pydantic model or JSON Schema — auto-detects enum-valued paths recursively
+) -> list[PathFieldLogprob]
 ```
 
 Supported response types:
@@ -28,6 +42,8 @@ Supported response types:
 Returns dict keyed by **value as string**. Scalar field → 1 entry. Array field → 1 entry per element.
 
 Priority: `field` > `response_schema` > all fields.
+
+For nested objects / arrays of objects, use `extract_path_logprobs(...)`. It preserves item order and repeated values via resolved paths such as `classifications[0].name`.
 
 Internally, `response_schema` is normalized to plain JSON Schema before field detection and enum resolution.
 
@@ -43,6 +59,14 @@ mean_probability: float             # exp(mean_logprob) — geometric mean
 mean_nonzero_logprob: float | None  # mean of logprobs where logprob != 0
 mean_nonzero_probability: float | None  # exp(mean_nonzero_logprob) — best for ENUM
 top_logprobs: list[TopAlternative]  # alternatives from first uncertain token
+```
+
+## PathFieldLogprob attributes
+
+```
+path: str               # resolved path, e.g. "classifications[0].name"
+value: Any              # parsed value
+field_logprob: FieldLogprob
 ```
 
 ## TokenInfo attributes
@@ -117,6 +141,35 @@ for value, fl in result.items():
 # technology: 0.916
 ```
 
+### Simple array of strings
+
+```python
+# Response: {"classifications": ["Positive", "Negative", "Neutral"]}
+result = extract_field_logprobs(resp, field="classifications")
+
+for value, fl in result.items():
+    print(f"{value}: {fl.mean_nonzero_probability}")
+```
+
+If repeated values are possible and you need positions, use:
+
+```python
+result = extract_path_logprobs(resp, field_path="classifications[]")
+print(result[0].path)   # "classifications[0]"
+print(result[0].value)  # "Positive"
+```
+
+### Nested path
+
+```python
+result = extract_path_logprobs(resp, field_path="classifications[].name")
+
+for entry in result:
+    print(entry.path)                                   # "classifications[0].name"
+    print(entry.value)                                  # "Positive"
+    print(entry.field_logprob.mean_nonzero_probability) # 0.961
+```
+
 ### Response schema auto-detection
 
 ```python
@@ -189,7 +242,7 @@ from llm_structured_confidence import add_confidence_columns
 # Vertex AI batch output
 df = pd.read_json("vertex_batch_output.jsonl", lines=True)
 df = add_confidence_columns(df, response_column="response", field="category")
-# Adds: confidence_value, confidence_prob, confidence_joint_prob,
+# Adds: confidence_value, confidence_path, confidence_prob, confidence_joint_prob,
 #        confidence_top_alt, confidence_top_alt_resolved,
 #        confidence_top_alt_prob, confidence_error
 
@@ -200,7 +253,8 @@ df = add_confidence_columns(df, response_column="body", field="category")
 
 # Custom prefix
 df = add_confidence_columns(df, response_column="response", field="category", prefix="conf")
-# Adds: conf_value, conf_prob, conf_joint_prob, conf_top_alt, conf_top_alt_resolved, conf_top_alt_prob, conf_error
+# Adds: conf_value, conf_path, conf_prob, conf_joint_prob,
+#       conf_top_alt, conf_top_alt_resolved, conf_top_alt_prob, conf_error
 ```
 
 For single-response extraction into a flat dict:
@@ -211,6 +265,7 @@ from llm_structured_confidence import extract_confidence
 row = {"response": {...}}  # raw batch response dict
 metrics = extract_confidence(row["response"], field="category")
 # metrics = {
+#     "path": "category",
 #     "value": "technology",
 #     "joint_probability": 0.9999,
 #     "mean_probability": 0.9999,
@@ -233,6 +288,14 @@ from llm_structured_confidence._converter import normalize_response
 
 # JSON → dict with _ValueSpan(value, char_start, char_end) for each atomic value
 parsed = parse_json_spans('{"category": "bars"}')  # parsed["category"].char_start, .char_end
+
+# Nested arrays of objects keep the full structure; only atomic leaves are _ValueSpan
+parsed = parse_json_spans(
+    '{"classifications":[{"id":0,"name":"Positive","color":"#00FF00"}]}'
+)
+item = parsed["classifications"][0]
+print(item["id"].value)    # 0
+print(item["name"].value)  # "Positive"
 
 # Token char ranges from concatenation
 ranges = build_token_char_ranges(tokens)
@@ -259,8 +322,9 @@ APIs in `_parser` and `_converter` are internal; may change in minor releases.
 ```
 llm_structured_confidence/
   __init__.py    # extract_field_logprobs(), Pydantic detection
+  _extract.py    # top-level + path-aware extraction helpers
   _classification.py  # Enum/Literal field detection + token-prefix resolution
-  _types.py      # FieldLogprob, TokenInfo, TopAlternative
+  _types.py      # FieldLogprob, PathFieldLogprob, TokenInfo, TopAlternative
   _parser.py     # Lark JSON parser, char-range overlap logic
   _converter.py  # normalizes litellm/OpenAI/google-genai/raw dicts → internal format
   _pandas.py     # add_confidence_columns(), extract_confidence()

@@ -108,3 +108,12 @@ class FieldLogprob:
             mean_nonzero_probability=mean_nz_prob,
             top_logprobs=top_logprobs,
         )
+
+
+@dataclass(frozen=True)
+class PathFieldLogprob:
+    """A resolved JSON path together with the confidence for its atomic value."""
+
+    path: str
+    value: Any
+    field_logprob: FieldLogprob

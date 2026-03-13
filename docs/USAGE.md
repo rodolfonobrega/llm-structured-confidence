@@ -4,9 +4,11 @@ Quick reference for the public API of `llm-structured-confidence`.
 
 This guide covers:
 - `extract_field_logprobs(...)`
+- `extract_path_logprobs(...)`
 - `extract_confidence(...)`
 - `add_confidence_columns(...)`
 - `FieldLogprob`
+- `PathFieldLogprob`
 - `TokenInfo`
 - `TopAlternative`
 
@@ -27,9 +29,11 @@ pip install "llm-structured-confidence[pandas]"
 ```python
 from llm_structured_confidence import (
     extract_field_logprobs,
+    extract_path_logprobs,
     extract_confidence,
     add_confidence_columns,
     FieldLogprob,
+    PathFieldLogprob,
     TokenInfo,
     TopAlternative,
 )
@@ -124,6 +128,112 @@ for value, fl in result.items():
     print(value, fl.mean_nonzero_probability)
 ```
 
+### Example: simple array of strings
+
+```python
+# {"classifications": ["Positive", "Negative", "Neutral"]}
+result = extract_field_logprobs(response, field="classifications")
+
+for value, fl in result.items():
+    print(value, fl.mean_nonzero_probability)
+```
+
+This works because the array elements are atomic values. If you need to preserve
+positions, use:
+
+```python
+results = extract_path_logprobs(response, field_path="classifications[]")
+
+print(results[0].path)   # classifications[0]
+print(results[0].value)  # Positive
+```
+
+## Nested Paths: `extract_path_logprobs(...)`
+
+Use this when the values you want are inside nested objects or arrays of objects.
+
+```python
+def extract_path_logprobs(
+    response,
+    *,
+    field_path: str | None = None,
+    response_schema: type | dict[str, Any] | None = None,
+) -> list[PathFieldLogprob]
+```
+
+Behavior:
+
+- `field_path=` selects an atomic JSON value using:
+  - `.` for object traversal
+  - `[]` for arrays
+- examples:
+  - `classification.name`
+  - `classifications[].name`
+  - `groups[].items[].label`
+- if `field_path` is omitted and `response_schema=` is provided, enum-valued paths are auto-detected recursively
+- return order matches the JSON order, so repeated values do not collide
+
+### Example: explicit nested path
+
+```python
+# {
+#   "classifications": [
+#     {"id": 0, "name": "Positive", "color": "#00FF00"},
+#     {"id": 1, "name": "Negative", "color": "#FF0000"},
+#   ]
+# }
+results = extract_path_logprobs(response, field_path="classifications[].name")
+
+for entry in results:
+    print(entry.path, entry.value, entry.field_logprob.mean_nonzero_probability)
+```
+
+### Example: nested auto-detection with Pydantic
+
+```python
+from enum import Enum
+from pydantic import BaseModel
+
+
+class Label(str, Enum):
+    positive = "Positive"
+    negative = "Negative"
+    neutral = "Neutral"
+
+
+class ClassificationItem(BaseModel):
+    id: int
+    name: Label
+    color: str
+
+
+class Output(BaseModel):
+    classifications: list[ClassificationItem]
+
+
+results = extract_path_logprobs(response, response_schema=Output)
+print(results[0].path)   # classifications[0].name
+print(results[0].value)  # Positive
+```
+
+## Return Type: `PathFieldLogprob`
+
+Each path-aware result contains:
+
+- `path`: resolved path, e.g. `classifications[0].name`
+- `value`: parsed Python value
+- `field_logprob`: the usual `FieldLogprob`
+
+Example:
+
+```python
+entry = results[0]
+
+print(entry.path)
+print(entry.value)
+print(entry.field_logprob.top_logprobs[0].resolved_value)
+```
+
 ## Return Type: `FieldLogprob`
 
 Each extracted value maps to one `FieldLogprob`.
@@ -209,6 +319,7 @@ def extract_confidence(
     response,
     *,
     field: str | None = None,
+    field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
 ) -> dict[str, Any]
 ```
@@ -220,8 +331,8 @@ Example:
 ```python
 metrics = extract_confidence(
     response,
-    field="category",
-    response_schema=Classification,
+    field_path="classifications[].name",
+    response_schema=Output,
 )
 
 print(metrics)
@@ -229,6 +340,7 @@ print(metrics)
 
 Returned keys:
 
+- `path`
 - `value`
 - `joint_probability`
 - `mean_probability`
@@ -241,6 +353,7 @@ Returned keys:
 
 Notes:
 
+- `field_path` takes precedence over `field`
 - `top_alternative` is the best alternative after the chosen token/value
 - on failure, the helper returns `error` instead of raising
 
@@ -252,12 +365,15 @@ def add_confidence_columns(
     *,
     response_column: str = "response",
     field: str | None = None,
+    field_path: str | None = None,
     response_schema: type | dict[str, Any] | None = None,
     prefix: str = "confidence",
 )
 ```
 
 Use this for batch API outputs loaded into pandas.
+
+If `field_path=` is used, the helper takes the first matching value and also adds `{prefix}_path`.
 
 Example: Vertex AI batch output
 
@@ -288,6 +404,7 @@ df = add_confidence_columns(
 Added columns:
 
 - `{prefix}_value`
+- `{prefix}_path`
 - `{prefix}_prob`
 - `{prefix}_joint_prob`
 - `{prefix}_top_alt`
@@ -336,6 +453,22 @@ from llm_structured_confidence._converter import normalize_response
 ```
 
 Use them only if you need custom parsing/token workflows.
+
+Example: nested arrays of objects are preserved in the parsed tree, with `_ValueSpan`
+only at atomic leaves.
+
+```python
+parsed = parse_json_spans(
+    '{"classifications":[{"id":0,"name":"Positive","color":"#00FF00"}]}'
+)
+
+item = parsed["classifications"][0]
+print(type(item).__name__)          # dict
+print(item["id"].value)             # 0
+print(item["name"].value)           # "Positive"
+print(item["color"].value)          # "#00FF00"
+print(item["name"].char_start)      # character offset of Positive in the JSON string
+```
 
 ## Minimal Checklist
 

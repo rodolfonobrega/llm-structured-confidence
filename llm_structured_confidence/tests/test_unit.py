@@ -11,10 +11,19 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel
 
-from llm_structured_confidence import extract_field_logprobs, FieldLogprob, TokenInfo, TopAlternative
+from llm_structured_confidence import (
+    extract_field_logprobs,
+    extract_path_logprobs,
+    FieldLogprob,
+    PathFieldLogprob,
+    TokenInfo,
+    TopAlternative,
+)
 from llm_structured_confidence._classification import (
     classification_values_by_field,
+    classification_values_by_path,
     detect_classification_fields,
+    detect_classification_paths,
     normalize_response_schema,
 )
 from llm_structured_confidence._converter import normalize_response, NormalizedToken, NormalizedResponse
@@ -37,6 +46,7 @@ from .conftest import (
     MultipleCategoriesModel,
     LiteralModel,
     MixedModel,
+    NestedClassificationModel,
     CategoryEnum,
     GEMINI25_SCALAR_CONTENT,
     GEMINI25_SCALAR_TOKENS,
@@ -94,6 +104,29 @@ STRUCTURED_OUTPUT_WRAPPER = {
     },
 }
 
+NESTED_CLASSIFICATION_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "classifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "name": {
+                        "type": "string",
+                        "enum": ["Positive", "Negative", "Neutral"],
+                    },
+                    "color": {"type": "string"},
+                },
+                "required": ["id", "name", "color"],
+            },
+        }
+    },
+    "required": ["classifications"],
+    "additionalProperties": False,
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1. FieldLogprob.compute — metric calculations
@@ -133,6 +166,22 @@ class TestResponseSchemaNormalization:
             "technology",
             "entertainment",
         ]
+
+    def test_detect_paths_recurse_through_pydantic(self):
+        assert detect_classification_paths(NestedClassificationModel) == [
+            "classifications[].name"
+        ]
+        assert classification_values_by_path(NestedClassificationModel)[
+            "classifications[].name"
+        ] == ["Positive", "Negative", "Neutral"]
+
+    def test_detect_paths_recurse_through_json_schema(self):
+        assert detect_classification_paths(NESTED_CLASSIFICATION_JSON_SCHEMA) == [
+            "classifications[].name"
+        ]
+        assert classification_values_by_path(NESTED_CLASSIFICATION_JSON_SCHEMA)[
+            "classifications[].name"
+        ] == ["Positive", "Negative", "Neutral"]
 
 
 class TestFieldLogprobCompute:
@@ -575,6 +624,116 @@ class TestExtractArray:
         assert groc.top_logprobs[0].token == "sport"
 
 
+class TestExtractPathLogprobs:
+
+    def test_nested_object_array_path_returns_all_items(self, nested_classification_response):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            field_path="classifications[].name",
+        )
+        assert [entry.path for entry in result] == [
+            "classifications[0].name",
+            "classifications[1].name",
+            "classifications[2].name",
+        ]
+        assert [entry.value for entry in result] == ["Positive", "Negative", "Positive"]
+
+    def test_nested_path_preserves_repeated_values(self, nested_classification_response):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            field_path="classifications[].name",
+        )
+        positives = [entry for entry in result if entry.value == "Positive"]
+        assert len(positives) == 2
+        assert positives[0].path == "classifications[0].name"
+        assert positives[1].path == "classifications[2].name"
+
+    def test_nested_path_resolves_top_alternatives_with_pydantic_schema(
+        self,
+        nested_classification_response,
+    ):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            field_path="classifications[].name",
+            response_schema=NestedClassificationModel,
+        )
+        assert result[0].field_logprob.top_logprobs[0].resolved_value == "Positive"
+        assert result[0].field_logprob.top_logprobs[1].resolved_value == "Negative"
+        assert result[1].field_logprob.top_logprobs[0].resolved_value == "Negative"
+
+    def test_response_schema_auto_detects_nested_paths(self, nested_classification_response):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            response_schema=NestedClassificationModel,
+        )
+        assert [entry.path for entry in result] == [
+            "classifications[0].name",
+            "classifications[1].name",
+            "classifications[2].name",
+        ]
+
+    def test_json_schema_auto_detects_nested_paths(self, nested_classification_response):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            response_schema=NESTED_CLASSIFICATION_JSON_SCHEMA,
+        )
+        assert [entry.value for entry in result] == ["Positive", "Negative", "Positive"]
+
+    def test_array_without_brackets_raises_clear_error(self, nested_classification_response):
+        with pytest.raises(ValueError, match="resolved to an array"):
+            extract_path_logprobs(
+                nested_classification_response,
+                field_path="classifications.name",
+            )
+
+    def test_object_terminal_raises_clear_error(self, nested_classification_response):
+        with pytest.raises(ValueError, match="resolved to an object"):
+            extract_path_logprobs(
+                nested_classification_response,
+                field_path="classifications[]",
+            )
+
+    def test_missing_nested_path_returns_empty_list(self, nested_classification_response):
+        result = extract_path_logprobs(
+            nested_classification_response,
+            field_path="classifications[].missing",
+        )
+        assert result == []
+
+    def test_simple_array_with_repeated_values_preserves_alignment(self):
+        content = '{"classifications":["Positive","Negative","Positive"]}'
+        tokens = [
+            ('{"', -0.01),
+            ("classifications", 0.0),
+            ('":["', -0.03),
+            ("Pos", -0.04, [("Pos", -0.04), ("Neg", -1.5), ("Neu", -2.0)]),
+            ("itive", 0.0),
+            ('","', -0.01),
+            ("Neg", -0.06, [("Neg", -0.06), ("Pos", -1.2), ("Neu", -1.8)]),
+            ("ative", 0.0),
+            ('","', -0.01),
+            ("Pos", -0.03, [("Pos", -0.03), ("Neg", -1.4), ("Neu", -2.1)]),
+            ("itive", 0.0),
+            ('"]}', 0.0),
+        ]
+        resp = make_openai_response(content, tokens)
+
+        result = extract_path_logprobs(resp, field_path="classifications[]")
+
+        assert [entry.path for entry in result] == [
+            "classifications[0]",
+            "classifications[1]",
+            "classifications[2]",
+        ]
+        assert [entry.value for entry in result] == ["Positive", "Negative", "Positive"]
+        assert result[0].field_logprob.tokens[0].token == "Pos"
+        assert result[1].field_logprob.tokens[0].token == "Neg"
+        assert result[2].field_logprob.tokens[0].token == "Pos"
+        assert result[0].field_logprob.top_logprobs[0].token == "Pos"
+        assert result[1].field_logprob.top_logprobs[0].token == "Neg"
+        assert result[2].field_logprob.top_logprobs[0].token == "Pos"
+
+
 class TestFieldSelection:
 
     def test_explicit_field(self, multi_field_response):
@@ -739,6 +898,17 @@ class TestEdgeCases:
         alt = TopAlternative(token="x", logprob=-1.0)
         assert alt.probability == pytest.approx(math.exp(-1.0))
 
+    def test_path_field_logprob_keeps_path_and_payload(self):
+        fl = FL.compute("Positive", [TokenInfo(token="Pos", logprob=-0.1, char_start=0, char_end=3)])
+        entry = PathFieldLogprob(
+            path="classifications[0].name",
+            value="Positive",
+            field_logprob=fl,
+        )
+        assert entry.path == "classifications[0].name"
+        assert entry.value == "Positive"
+        assert entry.field_logprob.mean_nonzero_probability == pytest.approx(math.exp(-0.1))
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 8. Pandas integration — extract_confidence, add_confidence_columns
@@ -798,6 +968,17 @@ class TestExtractConfidence:
         assert result["value"] is None
         assert result["error"] == "no values found"
 
+    def test_field_path_returns_first_nested_match(self, nested_vertex_batch_response):
+        from llm_structured_confidence import extract_confidence
+        result = extract_confidence(
+            nested_vertex_batch_response,
+            field_path="classifications[].name",
+            response_schema=NestedClassificationModel,
+        )
+        assert result["value"] == "Positive"
+        assert result["path"] == "classifications[0].name"
+        assert result["top_alternative_resolved"] == "Negative"
+
 
 class TestAddConfidenceColumns:
 
@@ -852,3 +1033,18 @@ class TestAddConfidenceColumns:
         original_cols = list(df.columns)
         add_confidence_columns(df, response_column="response", field="category")
         assert list(df.columns) == original_cols
+
+    def test_field_path_adds_resolved_path_column(self, nested_vertex_batch_response):
+        import pandas as pd
+        from llm_structured_confidence import add_confidence_columns
+
+        df = pd.DataFrame([{"response": nested_vertex_batch_response}])
+        result = add_confidence_columns(
+            df,
+            response_column="response",
+            field_path="classifications[].name",
+            response_schema=NestedClassificationModel,
+        )
+        assert list(result["confidence_value"]) == ["Positive"]
+        assert list(result["confidence_path"]) == ["classifications[0].name"]
+        assert list(result["confidence_top_alt_resolved"]) == ["Negative"]
