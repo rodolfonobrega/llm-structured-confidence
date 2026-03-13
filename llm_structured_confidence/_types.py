@@ -6,6 +6,9 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+# Epsilon for treating near-zero logprobs as deterministic (effectively 100% confidence)
+LOGPROB_EPSILON = 1e-5
+
 
 @dataclass(frozen=True)
 class TokenInfo:
@@ -89,7 +92,7 @@ class FieldLogprob:
         joint = sum(t.logprob for t in tokens)
         mean = joint / len(tokens)
 
-        nonzero = [t.logprob for t in tokens if t.logprob != 0.0]
+        nonzero = [t.logprob for t in tokens if abs(t.logprob) > LOGPROB_EPSILON]
         if nonzero:
             mean_nz = sum(nonzero) / len(nonzero)
             mean_nz_prob = math.exp(mean_nz)

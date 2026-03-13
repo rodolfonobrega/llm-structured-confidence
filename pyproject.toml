@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-structured-confidence"
-version = "0.4.4"
+version = "0.4.5"
 description = "Extract per-field confidence scores from LLM structured JSON outputs using token-level log-probabilities."
 readme = "README.md"
 license = "MIT"

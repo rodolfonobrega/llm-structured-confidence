@@ -2,6 +2,9 @@
 
 All notable changes to this project are recorded in this file.
 
+## [0.4.5]
+- Fixed: Added epsilon threshold (`1e-5`) for treating near-zero logprobs as deterministic. Values like `-0.0000001` are now excluded from `mean_nonzero` calculations, preventing distortion from floating-point noise.
+
 ## [0.4.4]
 - Fixed: Top-level array detection now works correctly. The `[]` path pattern is now properly detected for schemas with `type: "array"` at the root level.
 

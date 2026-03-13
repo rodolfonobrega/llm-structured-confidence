@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from ._converter import NormalizedToken
-from ._types import TopAlternative
+from ._types import LOGPROB_EPSILON, TopAlternative
 
 
 def detect_classification_paths(
@@ -112,7 +112,7 @@ def _first_top_logprobs(
 ) -> list[tuple[str, float]]:
     for idx in indices:
         nt = normalized_tokens[idx]
-        if nt.logprob != 0.0 and nt.top_logprobs:
+        if abs(nt.logprob) > LOGPROB_EPSILON and nt.top_logprobs:
             return nt.top_logprobs
     if indices:
         nt = normalized_tokens[indices[0]]
